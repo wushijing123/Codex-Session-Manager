@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Codex 会话生命周期</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip-link" href="#mainContent">跳到主要内容</a>
+  <header class="topbar">
+    <div class="brand">
+      <span class="mark" aria-hidden="true">C</span>
+      <div><strong>Codex 会话管理</strong><small>仅在本机运行</small></div>
+    </div>
+    <nav id="mainTabs" class="tabs hidden" aria-label="页面">
+      <button class="tab" data-view="overview">扫描结果</button>
+      <button class="tab auto-tab" data-view="auto">自动整理 <span id="autoCount">0</span></button>
+      <button class="tab" data-view="board">手动调整</button>
+      <button class="tab" data-view="explorer">全部会话</button>
+      <button class="tab" data-view="queue">确认执行 <span id="planCount">0</span></button>
+      <button class="tab" data-view="settings">设置</button>
+    </nav>
+    <div id="dashboardToolbar" class="toolbar hidden">
+      <span id="gateBadge" class="badge">读取中</span>
+      <button id="refreshBtn" class="secondary">重新扫描</button>
+    </div>
+  </header>
+
+  <main id="mainContent" tabindex="-1">
+    <section id="view-scan" class="view active scan-view">
+      <article class="scan-card">
+        <span class="scan-mark" aria-hidden="true">C</span>
+        <p class="eyebrow">LOCAL READ-ONLY SCAN</p>
+        <h1>先扫描，再决定怎么整理</h1>
+        <p class="scan-intro">读取本机 Codex 的索引、归档日志和保护关系，完成后自动给出分类与整理建议。扫描不会移动或删除任何会话。</p>
+        <button id="startScanBtn" class="scan-button">扫描本地 Codex 会话</button>
+        <div id="scanProgress" class="scan-progress hidden" role="progressbar" aria-live="polite" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-labelledby="scanProgressText">
+          <div class="progress-head"><strong id="scanProgressText">准备扫描</strong><span id="scanProgressValue">0%</span></div>
+          <div class="progress-track"><div id="scanProgressBar" class="progress-bar"></div></div>
+          <ol class="scan-steps">
+            <li data-scan-step="database">识别真实数据库</li>
+            <li data-scan-step="logs">匹配当前与归档日志</li>
+            <li data-scan-step="protection">核对置顶、保护与父子关系</li>
+            <li data-scan-step="classification">生成分类和整理建议</li>
+          </ol>
+        </div>
+        <p id="scanError" class="scan-error hidden"></p>
+      </article>
+    </section>
+
+    <section id="view-overview" class="view">
+      <div class="page-head">
+        <div><p class="eyebrow">SCAN RESULT</p><h1>扫描结果</h1><p class="page-subtitle">先看系统建议，需要时再进入全部会话或手动调整。</p></div>
+        <p id="scanMeta" class="muted"></p>
+      </div>
+      <div id="warningPanel" class="notice hidden"></div>
+      <div class="scan-result-panel">
+        <div><strong id="scanResultSummary">扫描完成</strong><span>下一步建议先看自动整理，只有少量例外才需要手动拖拽。</span></div>
+        <div class="footer-actions">
+          <button id="openAutoBtn">查看自动整理建议</button>
+          <button id="openExplorerBtn" class="secondary">浏览全部会话</button>
+        </div>
+      </div>
+      <div id="metricGrid" class="metric-grid"></div>
+      <div class="split">
+        <article class="panel">
+          <div class="panel-head"><div><p class="eyebrow">DISTRIBUTION</p><h2>推荐分类</h2></div></div>
+          <div id="recommendationChart" class="bar-chart"></div>
+        </article>
+        <article class="panel">
+          <div class="panel-head"><div><p class="eyebrow">INTEGRITY</p><h2>索引一致性</h2></div></div>
+          <dl id="integrityList" class="facts"></dl>
+        </article>
+      </div>
+    </section>
+
+    <section id="view-auto" class="view">
+      <div class="page-head">
+        <div><p class="eyebrow">AUTO PLAN, HUMAN APPROVAL</p><h1>归档自动整理</h1></div>
+        <div class="page-head-actions">
+          <p class="muted">系统先批量归类并生成计划；你只复核例外和最终确认。</p>
+          <button id="viewAllArchivedBtn" class="secondary">查看全部归档</button>
+        </div>
+      </div>
+      <div class="notice safe-notice">
+        <strong>这里不会直接操作会话。</strong>
+        点击“加入执行计划”只更新 <code>planned_action</code>；真正移动、隔离或删除仍需查看确认单、点击二次确认并完全退出 Codex。
+      </div>
+      <details class="panel advanced-panel">
+        <summary>
+          <span><strong>可选：复核 3 轮以内的短对话</strong><small>只有需要识别“一次性对话”时才使用</small></span>
+          <span class="advanced-toggle" aria-hidden="true">展开</span>
+        </summary>
+        <div class="semantic-review-panel">
+          <div>
+            <p class="eyebrow">CODEX SEMANTIC REVIEW</p>
+            <h2>扫描一次性短对话</h2>
+            <p class="muted">本地先准确统计真实用户轮次，再生成最小化复核包。Codex只做分类，不执行历史对话中的任何指令。</p>
+          </div>
+          <div id="reviewMetrics" class="review-metrics"></div>
+          <div class="review-actions">
+            <label><span>最多用户轮次</span><select id="reviewMaxTurns"><option value="1">1轮</option><option value="2">2轮</option><option value="3" selected>3轮</option></select></label>
+            <button id="prepareReviewBtn">准备复核包</button>
+          </div>
+          <div id="reviewBundleNotice" class="review-bundle hidden"></div>
+        </div>
+      </details>
+      <div id="autoMetricGrid" class="metric-grid auto-metrics"></div>
+      <div id="archivedBreakdown" class="breakdown-strip"></div>
+      <div class="auto-layout">
+        <aside class="panel preset-panel">
+          <div class="panel-head"><div><p class="eyebrow">POLICY</p><h2>选择整理策略</h2></div></div>
+          <div id="presetList" class="preset-list">
+            <button class="preset" data-preset="conservative">
+              <strong>保守整理</strong><span>只处理明确的大体积旧会话，建议冷存档。</span>
+            </button>
+            <button class="preset active" data-preset="space">
+              <strong>推荐整理</strong><span>按闲置时间自动分流：有价值信号的冷存档，低价值和历史自动化进入 14 天隔离。</span>
+            </button>
+            <button class="preset" data-preset="temporary">
+              <strong>隔离候选</strong><span>只查看达到时间门槛的低价值、临时和历史自动化会话。</span>
+            </button>
+          </div>
+          <div class="policy-note">
+            <strong>系统不会自动处理</strong>
+            <p>置顶、当前活跃、状态冲突和永久保护会话。父子任务会标成“需整组处理”，不会混入单条自动计划。</p>
+          </div>
+        </aside>
+        <article class="panel proposal-panel">
+          <div class="proposal-head">
+            <div><p class="eyebrow">BATCH PROPOSAL</p><h2>本次批量方案</h2><p id="autoSummary" class="muted"></p></div>
+            <div class="proposal-tools">
+              <button id="selectAllAutoBtn" class="secondary">全选可处理项</button>
+              <button id="clearSelectionAutoBtn" class="secondary">取消选择</button>
+            </div>
+          </div>
+          <div id="autoGateNotice" class="notice hidden"></div>
+          <div id="autoLoading" class="table-loading hidden" role="status">正在生成整理建议…</div>
+          <div class="proposal-table-wrap">
+            <table>
+              <thead><tr><th class="check-col">选中</th><th>会话</th><th>自动动作</th><th>判断依据</th><th>占用</th></tr></thead>
+              <tbody id="autoProposalRows"></tbody>
+            </table>
+          </div>
+          <div class="proposal-footer">
+            <div class="proposal-summary">
+              <span id="autoTableStatus" class="muted">等待生成建议</span>
+              <span class="muted">已选</span><strong id="autoSelectedSummary">0 条 · 0 B</strong>
+            </div>
+            <div class="footer-actions">
+              <button id="loadMoreAutoBtn" class="secondary hidden">显示更多</button>
+              <button id="clearAutoPlansBtn" class="secondary">清除自动生成的计划</button>
+              <button id="applyAutoPlanBtn">加入执行计划</button>
+            </div>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section id="view-board" class="view">
+      <div class="page-head">
+        <div><p class="eyebrow">EXCEPTION TUNING</p><h1>手动微调</h1></div>
+        <p class="muted">自动整理之后，只在这里拖拽少量例外；拖拽不会直接写盘处理会话。</p>
+      </div>
+      <div id="kanban" class="kanban" aria-label="生命周期看板"></div>
+    </section>
+
+    <section id="view-explorer" class="view">
+      <div class="page-head">
+        <div><p class="eyebrow">SESSION INDEX</p><h1>全部会话</h1></div>
+        <p id="resultCount" class="muted"></p>
+      </div>
+      <div class="filters">
+        <label class="search"><span>搜索</span><div class="search-control"><input id="searchInput" type="search" placeholder="标题、ID、项目路径或归档正文关键词"><button id="searchContentBtn" type="button" class="secondary">搜索归档正文</button></div></label>
+        <label><span>状态</span><select id="stateFilter"><option value="">全部状态</option></select></label>
+        <label><span>建议</span><select id="recommendationFilter"><option value="">全部建议</option></select></label>
+        <label><span>对话轮次</span><select id="turnFilter"><option value="">全部轮次</option><option value="one">仅1轮</option><option value="short">3轮以内</option><option value="reviewed">Codex已复核</option><option value="disposable">一次性对话</option></select></label>
+        <label><span>风险</span><select id="riskFilter"><option value="">全部</option><option value="hard">真正锁定</option><option value="group">需整组处理</option><option value="conflict">状态冲突</option><option value="planned">已有计划</option></select></label>
+        <p id="contentSearchStatus" class="content-search-status hidden" role="status"></p>
+      </div>
+      <div class="table-wrap">
+        <table class="session-table">
+          <colgroup><col class="session-title-col"><col><col><col><col><col></colgroup>
+          <thead><tr><th>会话</th><th>实际状态</th><th>建议</th><th>更新时间</th><th>占用</th><th>计划</th></tr></thead>
+          <tbody id="sessionRows"></tbody>
+        </table>
+      </div>
+      <div class="list-footer">
+        <span id="explorerTableStatus" class="muted"></span>
+        <button id="loadMoreExplorerBtn" class="secondary hidden">显示更多会话</button>
+      </div>
+    </section>
+
+    <section id="view-queue" class="view">
+      <div class="page-head">
+        <div><p class="eyebrow">SAFE ACTION REVIEW</p><h1>下一步：确认执行计划</h1></div>
+        <p class="muted">这里相当于购物车；取消计划不会删除会话，生成安全确认单也不会立即执行。</p>
+      </div>
+      <div id="capabilityNotice" class="notice"></div>
+      <div id="queueList" class="queue-list"></div>
+      <div id="confirmationSheet" class="hidden"></div>
+      <div id="manifestList" class="queue-list manifest-list"></div>
+      <div class="queue-footer">
+        <div><span class="muted">本次计划影响空间</span><strong id="plannedBytes">0 B</strong></div>
+        <div class="footer-actions">
+          <button id="exportPlanBtn" class="secondary">导出计划 JSON</button>
+          <button id="prepareBtn">下一步：查看操作确认单</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="view-settings" class="view">
+      <div class="page-head"><div><p class="eyebrow">LOCAL ONLY</p><h1>设置</h1></div></div>
+      <form id="settingsForm" class="settings-grid">
+        <label><span>归档闲置多久进入清理判断</span><select name="cleanup_age_days"><option value="7">7 天</option><option value="14">14 天</option><option value="30">30 天（推荐）</option><option value="60">60 天</option><option value="90">90 天</option><option value="180">180 天</option><option value="365">365 天</option></select></label>
+        <label><span>每个自动化至少保留最近运行</span><select name="automation_keep_runs"><option value="1">1 次</option><option value="3">3 次（推荐）</option><option value="5">5 次</option><option value="10">10 次</option><option value="20">20 次</option></select></label>
+        <label><span>冷存档目录</span><input name="cold_storage_dir" placeholder="首次执行前必须选择"></label>
+        <label><span>报告目录</span><input name="report_dir" placeholder="默认写入应用数据目录"></label>
+        <label><span>压缩策略</span><select name="compression"><option value="auto">自动：有 zstd 时使用</option><option value="zstd">必须 zstd</option><option value="none">保留原始 JSONL</option></select></label>
+        <button type="submit">保存本地设置</button>
+      </form>
+      <div class="panel settings-note"><h2>边界</h2><p>服务只绑定 127.0.0.1，不联网、不使用外部 CDN。关闭本地看板服务后页面立即停止。</p></div>
+    </section>
+  </main>
+
+  <div id="drawerScrim" class="drawer-scrim" aria-hidden="true"></div>
+  <aside id="drawer" class="drawer" role="dialog" aria-modal="true" aria-labelledby="detailTitle" aria-hidden="true">
+    <button id="closeDrawer" class="drawer-close secondary" aria-label="关闭会话详情">关闭</button>
+    <p class="eyebrow">SESSION DETAIL</p><h2 id="detailTitle"></h2>
+    <div id="detailBody"></div>
+  </aside>
+  <div id="finalConfirmScrim" class="confirm-scrim" aria-hidden="true"></div>
+  <section id="finalConfirmDialog" class="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="finalConfirmTitle" aria-hidden="true">
+    <button id="closeFinalConfirm" class="dialog-close secondary" aria-label="关闭二次确认">关闭</button>
+    <p class="eyebrow">SECOND CONFIRMATION</p>
+    <h2 id="finalConfirmTitle">确认本次操作？</h2>
+    <p id="finalConfirmBody" class="muted"></p>
+    <div id="finalConfirmWarning" class="hidden"></div>
+    <label id="finalConfirmAcknowledgement" class="acknowledge hidden"><input id="finalConfirmAck" type="checkbox"><span id="finalConfirmAckText"></span></label>
+    <div class="dialog-actions"><button id="cancelFinalConfirm" class="secondary">返回检查</button><button id="commitFinalConfirm">确认并生成执行单</button></div>
+  </section>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="app.js" defer></script>
+</body>
+</html>

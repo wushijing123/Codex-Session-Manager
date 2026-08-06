@@ -1,0 +1,44 @@
+# Local Python/runtime artifacts
+__pycache__/
+*.py[cod]
+.Python
+.venv/
+venv/
+env/
+build/
+dist/
+coverage/
+.coverage*
+
+# macOS/editor noise
+.DS_Store
+.idea/
+.vscode/
+
+# Codex local data: never commit real session content or databases
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.jsonl
+*.log
+sessions/
+archived_sessions/
+quarantine/
+cold_archive/
+manifests/
+reports/
+audit/
+
+# Local settings and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.token
+
+# Front-end/tool caches
+node_modules/
+.cache/
+.parcel-cache/
