@@ -2,6 +2,8 @@
 
 这是一个本地运行的 Codex 会话盘点、分类与生命周期管理 Skill。
 
+当前版本：`0.1.0`（见 [VERSION](VERSION) 和 [CHANGELOG.md](CHANGELOG.md)）。
+
 ## 能做什么
 
 - 只读扫描 Codex 当前会话、归档会话和未索引日志
@@ -25,6 +27,25 @@ python3 scripts/session_manager.py dashboard --no-open
 python3 -m unittest discover -s tests -v
 node --check assets/dashboard/app.js
 ```
+
+## 版本管理
+
+日常修改完成后：
+
+```bash
+git add .
+git commit -m "说明这次修改"
+git push
+```
+
+准备发布新版本时，先更新 `VERSION` 和 `CHANGELOG.md`，再创建版本标签：
+
+```bash
+git tag -a v0.1.1 -m "Release v0.1.1"
+git push origin v0.1.1
+```
+
+GitHub Actions 会在推送到 `main` 或提交合并请求时自动运行测试。
 
 ## 目录结构
 
