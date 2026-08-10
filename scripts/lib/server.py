@@ -1010,12 +1010,28 @@ class DashboardState:
 
     def launch_and_quit_codex(self, manifest_value: str, confirmation: str) -> dict[str, Any]:
         helper = self.launch_helper(manifest_value, confirmation)
-        return {"helper": helper, **self.quit_codex_desktop()}
+        try:
+            return {"helper": helper, **self.quit_codex_desktop(), "manual_exit_required": False}
+        except RuntimeError as error:
+            return {
+                "helper": helper,
+                "requested_apps": [],
+                "manual_exit_required": True,
+                "quit_warning": str(error),
+            }
 
     def quit_codex_desktop(self) -> dict[str, Any]:
         """Request a normal macOS app quit after the user has started a helper."""
         requested: list[str] = []
         for app_name in ("ChatGPT", "Codex"):
+            running = subprocess.run(
+                ["osascript", "-e", f'application "{app_name}" is running'],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if running.returncode != 0 or running.stdout.strip().lower() != "true":
+                continue
             result = subprocess.run(
                 ["osascript", "-e", f'tell application "{app_name}" to quit'],
                 capture_output=True,
@@ -1107,7 +1123,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "catalog": self.state.catalog,
                     "settings": settings,
                     "capabilities": {
-                        "drag_planning": True,
+                        "detail_planning": True,
                         "manifest_prepare": True,
                         "indexed_restore_to_codex": False,
                         "reason": "真实关闭应用后的恢复闭环尚未通过，因此保持禁用。",

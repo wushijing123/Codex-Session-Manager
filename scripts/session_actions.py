@@ -99,17 +99,42 @@ def codex_processes(codex_home: Path) -> list[str]:
             if line.lower().startswith('"codex')
         ]
     if platform.system() == "Darwin":
-        database_files = [
-            codex_home / "state_5.sqlite",
-            codex_home / "state_5.sqlite-wal",
-            codex_home / "state_5.sqlite-shm",
-        ]
-        result = subprocess.run(
-            ["lsof", "-nP", *map(str, database_files)],
+        database_files: list[Path] = []
+        for root in (codex_home, codex_home / "sqlite"):
+            if not root.is_dir():
+                continue
+            for database in root.glob("state_*.sqlite"):
+                if database.is_file() and not database.is_symlink():
+                    database_files.extend(
+                        path
+                        for path in (
+                            database,
+                            database.with_name(f"{database.name}-wal"),
+                            database.with_name(f"{database.name}-shm"),
+                        )
+                        if path.is_file() and not path.is_symlink()
+                    )
+        matches: list[str] = []
+        if database_files:
+            result = subprocess.run(
+                ["lsof", "-nP", *map(str, database_files)],
+                capture_output=True,
+                text=True,
+            )
+            matches.extend(
+                line.strip() for line in result.stdout.splitlines()[1:] if line.strip()
+            )
+        app_processes = subprocess.run(
+            [
+                "pgrep",
+                "-fal",
+                r"/Applications/(Codex|ChatGPT)\.app/|codex app-server",
+            ],
             capture_output=True,
             text=True,
         )
-        return [line.strip() for line in result.stdout.splitlines()[1:] if line.strip()]
+        matches.extend(line.strip() for line in app_processes.stdout.splitlines() if line.strip())
+        return list(dict.fromkeys(matches))
     result = subprocess.run(
         ["ps", "-axo", "pid=,command="],
         check=True,

@@ -295,7 +295,7 @@ def discover_database(codex_home: Path, log_ids: set[str]) -> tuple[list[Databas
         ambiguous = (
             recent_delta <= 60
             and abs(selected.match_ratio - second.match_ratio) < 0.02
-            and selected.thread_count != second.thread_count
+            and abs(selected.matching_logs - second.matching_logs) <= 1
         )
     return inspected, selected.path, ambiguous
 
@@ -1045,6 +1045,8 @@ def classify(
         reasons.append("group_action_required")
     if record.get("actual_state") == "unindexed":
         return "review_required", reasons + ["unindexed_log"], True
+    if age_days >= 14 and record.get("size_bytes", 0) > 20 * 1024 * 1024:
+        return "cold_archive", reasons + ["old_large_session"], False
     automation_rank = int(record.get("automation_rank") or 0)
     if record.get("automation_key"):
         if (
@@ -1120,8 +1122,6 @@ def classify(
                 False,
             )
         return "delete_candidate", reasons + ["inactive_without_unique_value"], False
-    if age_days >= 14 and record.get("size_bytes", 0) > 20 * 1024 * 1024:
-        return "cold_archive", reasons + ["old_large_session"], False
     if has_write_evidence:
         return "high_value", reasons + ["verified_write_work"], False
     if has_value_hint:

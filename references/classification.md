@@ -36,9 +36,9 @@
 - 父子任务不进入单条自动计划，页面明确标为“需整组处理”；已归档自动化历史可以进入自动计划。
 - `cold_archive` 只映射为 `planned_action=cold_archive`。
 - `delete_candidate` 只映射为 `planned_action=quarantine`，绝不直接映射为最终清除。
-- `permanent_delete_candidate` 不参与自动动作映射；页面只展示和筛选，用户仍须手动加入垃圾焚烧厂。
-- 用户把普通归档拖入“垃圾焚烧厂”时写入 `planned_action=permanent_delete`。这是手动放弃恢复期的直接永久删除授权，绝不由规则或 Codex 语义复核自动产生。
-- 执行前必须生成本地操作确认单。焚烧项若属于 `high_value`、`review_required`、`unknown`，或检测到写入、附件、超过 3 轮、语义产物和大体积信号，确认单必须逐条警告；警告不是硬锁，但要求额外知情勾选。
+- `permanent_delete_candidate` 不参与自动动作映射；页面只展示和筛选，用户仍须在会话详情中手动选择永久删除。
+- 用户在普通归档会话详情中点击“永久删除”时写入 `planned_action=permanent_delete`。这是手动放弃恢复期的直接永久删除授权，绝不由规则或 Codex 语义复核自动产生。
+- 执行前必须生成本地操作确认单。永久删除项若属于 `high_value`、`review_required`、`unknown`，或检测到写入、附件、超过 3 轮、语义产物和大体积信号，确认单必须逐条警告；警告不是硬锁，但要求额外知情勾选。
 - `protected`、`high_value`、`review_required` 和 `unknown` 不生成自动动作。
 - 批量写入前重新扫描；候选、推荐、保护或人工计划发生变化时停止并要求刷新。
 - 自动计划单独记录来源。用户手动触碰同一计划后立即转为人工计划；清除自动计划不得影响人工计划。

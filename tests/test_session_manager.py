@@ -169,6 +169,18 @@ class SessionManagerTest(unittest.TestCase):
         self.assertFalse(catalog["mutation_allowed"])
         self.assertEqual(1, catalog["summary"]["unindexed"])
 
+    def test_equally_current_database_copies_are_ambiguous(self) -> None:
+        duplicate = self.codex / "sqlite/state_6.sqlite"
+        duplicate.parent.mkdir(parents=True, exist_ok=True)
+        source = sqlite3.connect(self.codex / "state_5.sqlite")
+        target = sqlite3.connect(duplicate)
+        source.backup(target)
+        target.close()
+        source.close()
+        catalog = scan_catalog(self.codex, self.app, self.pins)
+        self.assertTrue(catalog["database_ambiguous"])
+        self.assertFalse(catalog["mutation_allowed"])
+
     def test_symlink_logs_are_never_cataloged(self) -> None:
         target = self.root / "outside.jsonl"
         target.write_text("{}\n", encoding="utf-8")
@@ -203,6 +215,8 @@ class SessionManagerTest(unittest.TestCase):
         self.assertEqual("cold_archive", classify(old_value, now, policy)[0])
         old_low_value = record("普通问答", 35)
         self.assertEqual("delete_candidate", classify(old_low_value, now, policy)[0])
+        old_large = record("普通问答", 35, size_bytes=21 * 1024 * 1024)
+        self.assertEqual("cold_archive", classify(old_large, now, policy)[0])
         old_unscanned = record("普通问答", 65)
         self.assertEqual("delete_candidate", classify(old_unscanned, now, policy)[0])
         old_scanned_short = record(
@@ -551,7 +565,7 @@ class SessionManagerTest(unittest.TestCase):
         excerpts = result["matches"][0]["excerpts"]
         self.assertEqual(["artifact"], [excerpt["role"] for excerpt in excerpts])
 
-    def test_incinerator_drag_plan_prepares_direct_permanent_delete(self) -> None:
+    def test_permanent_delete_plan_prepares_direct_delete(self) -> None:
         dashboard = DashboardState(
             self.codex,
             self.app,
@@ -597,7 +611,7 @@ class SessionManagerTest(unittest.TestCase):
             {item["code"] for item in sheet["blockers"]},
         )
 
-    def test_confirmation_sheet_warns_about_important_incinerator_item(self) -> None:
+    def test_confirmation_sheet_warns_about_important_permanent_delete(self) -> None:
         dashboard = DashboardState(
             self.codex,
             self.app,
@@ -630,17 +644,19 @@ class SessionManagerTest(unittest.TestCase):
         )
         self.assertGreaterEqual(len(warning["reasons"]), 4)
 
-    def test_dashboard_starts_with_read_only_scan_flow(self) -> None:
+    def test_dashboard_starts_with_visual_home_and_simple_navigation(self) -> None:
         html = (SKILL_DIR / "assets/dashboard/index.html").read_text(encoding="utf-8")
         javascript = (SKILL_DIR / "assets/dashboard/app.js").read_text(
             encoding="utf-8"
         )
-        self.assertIn('id="view-scan" class="view active scan-view"', html)
-        self.assertIn('id="startScanBtn"', html)
-        self.assertIn('id="scanProgressBar"', html)
-        self.assertIn('id="mainTabs" class="tabs hidden"', html)
+        self.assertIn('id="view-home" class="view active"', html)
+        self.assertIn('id="lifecycleDonut"', html)
+        self.assertIn('id="storageStack"', html)
+        self.assertIn('id="ageChart"', html)
+        self.assertEqual(4, html.count('<button class="tab'))
+        self.assertNotIn('id="view-board"', html)
+        self.assertNotIn('id="view-scan"', html)
         self.assertIn('class="skip-link"', html)
-        self.assertIn('role="progressbar"', html)
         self.assertIn('class="panel advanced-panel"', html)
         self.assertIn('id="loadMoreAutoBtn"', html)
         self.assertIn('id="loadMoreExplorerBtn"', html)
@@ -649,13 +665,18 @@ class SessionManagerTest(unittest.TestCase):
         self.assertNotIn("固定本地确认短语", javascript)
         self.assertIn("confirm_sheet_button", (SKILL_DIR / "scripts/lib/server.py").read_text(encoding="utf-8"))
         self.assertIn('api("/api/refresh"', javascript)
-        self.assertIn('switchView("overview")', javascript)
-        self.assertIn("state.auto.visibleLimit=25", javascript)
-        self.assertIn("state.explorerVisibleLimit=50", javascript)
+        self.assertIn('switchView("home")', javascript)
+        self.assertIn("visibleLimit: 25", javascript)
+        self.assertIn("explorerVisibleLimit: 50", javascript)
+        self.assertIn("清除旧计划", javascript)
+        self.assertIn("条可处理", javascript)
+        self.assertIn("条旧版标记（不会执行）", javascript)
+        self.assertIn("currentPlans.forEach", javascript)
+        self.assertNotIn("draggable", javascript)
         stylesheet = (SKILL_DIR / "assets/dashboard/style.css").read_text(
             encoding="utf-8"
         )
-        self.assertIn("@media(prefers-reduced-motion:reduce)", stylesheet)
+        self.assertIn("@media (prefers-reduced-motion: reduce)", stylesheet)
 
     def test_wal_rows_are_visible_and_duplicate_titles_remain_distinct(self) -> None:
         sessions = self.codex / "sessions/2026/07/25"
@@ -1162,6 +1183,46 @@ class SessionManagerTest(unittest.TestCase):
                 {manual_id: "archive", cold_id: "cold_archive"},
                 plans,
             )
+
+    def test_macos_process_gate_checks_all_discovered_databases(self) -> None:
+        database = self.codex / "sqlite/state_7.sqlite"
+        database.parent.mkdir(parents=True, exist_ok=True)
+        database.touch()
+        wal = database.with_name(f"{database.name}-wal")
+        wal.touch()
+        calls: list[list[str]] = []
+
+        def run(command: list[str], **_: object) -> SimpleNamespace:
+            calls.append(command)
+            return SimpleNamespace(stdout="", returncode=1)
+
+        with (
+            mock.patch.object(session_actions.platform, "system", return_value="Darwin"),
+            mock.patch.object(session_actions.subprocess, "run", side_effect=run),
+        ):
+            self.assertEqual([], session_actions.codex_processes(self.codex))
+
+        lsof = next(command for command in calls if command[0] == "lsof")
+        self.assertIn(str(database), lsof)
+        self.assertIn(str(wal), lsof)
+        self.assertTrue(any(command[0] == "pgrep" for command in calls))
+
+    def test_launch_and_quit_reports_helper_when_quit_request_fails(self) -> None:
+        dashboard = object.__new__(DashboardState)
+        helper = {"pid": 4321, "status": "waiting_for_codex_exit"}
+        with (
+            mock.patch.object(dashboard, "launch_helper", return_value=helper),
+            mock.patch.object(
+                dashboard,
+                "quit_codex_desktop",
+                side_effect=RuntimeError("codex_desktop_quit_request_failed"),
+            ),
+        ):
+            result = dashboard.launch_and_quit_codex("manifest", "confirmation")
+
+        self.assertEqual(helper, result["helper"])
+        self.assertTrue(result["manual_exit_required"])
+        self.assertEqual([], result["requested_apps"])
 
 
 if __name__ == "__main__":
