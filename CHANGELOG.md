@@ -6,6 +6,18 @@
 - `MINOR`：向后兼容的新功能
 - `PATCH`：向后兼容的问题修复和界面调整
 
+## [0.3.0] - 2026-08-10
+
+项目化与双语版本：
+
+- Dashboard 默认中文，新增完整英文切换、本地语言持久化与英文日期格式
+- 新增安全安装器，统一 Codex、Claude Code、Antigravity 和 WorkBuddy 入口且拒绝覆盖冲突目录
+- 新增无第三方依赖的项目 Doctor 与确定性运行时 Skill 打包器
+- CI 扩展到 macOS/Linux、Python 3.11/3.13、Node.js 24，并产出可安装 Skill 包
+- 新增标签 Release 工作流、Dependabot、Issue Form 和 Pull Request 安全模板
+- 新增中英 README、安装、工作流、架构、安全和贡献文档
+- 增加翻译覆盖、安装冲突、Doctor 和发布包结构回归测试
+
 ## [0.2.0] - 2026-08-10
 
 大道至简版本：

@@ -1664,29 +1664,62 @@ def apply_semantic_review_results(
     return {"applied": applied, "total_cached": len(stored)}
 
 
-def report_markdown(catalog: dict[str, Any]) -> str:
+def report_markdown(catalog: dict[str, Any], language: str = "zh-CN") -> str:
     summary = catalog["summary"]
-    lines = [
-        "# Codex 会话生命周期审计",
-        "",
-        f"- 生成时间：{catalog['generated_at']}",
-        f"- 索引数据库：{catalog.get('selected_database') or '未识别'}",
-        f"- 数据库歧义：{'是（已禁止写操作）' if catalog['database_ambiguous'] else '否'}",
-        f"- 置顶快照：{catalog['pin_snapshot_status']}",
-        f"- 会话总数：{summary['total']}",
-        f"- 索引会话：{summary['indexed']}",
-        f"- 未索引日志：{summary['unindexed']}",
-        f"- 日志占用：{human_bytes(summary['total_bytes'])}",
-        f"- 确定性删除候选预计空间：{human_bytes(summary['reclaimable_bytes'])}",
-        "",
-        "## 推荐分类",
-        "",
-        "| 分类 | 数量 |",
-        "|---|---:|",
-    ]
+    english = language == "en"
+    if english:
+        lines = [
+            "# Codex Session Lifecycle Audit",
+            "",
+            f"- Generated at: {catalog['generated_at']}",
+            f"- Indexed database: {catalog.get('selected_database') or 'Not identified'}",
+            f"- Database ambiguous: {'Yes (writes disabled)' if catalog['database_ambiguous'] else 'No'}",
+            f"- Pinned snapshot: {catalog['pin_snapshot_status']}",
+            f"- Total sessions: {summary['total']}",
+            f"- Indexed sessions: {summary['indexed']}",
+            f"- Unindexed logs: {summary['unindexed']}",
+            f"- Log storage: {human_bytes(summary['total_bytes'])}",
+            f"- Estimated low-risk deletion candidates: {human_bytes(summary['reclaimable_bytes'])}",
+            "",
+            "## Recommendation distribution",
+            "",
+            "| Recommendation | Count |",
+            "|---|---:|",
+        ]
+    else:
+        lines = [
+            "# Codex 会话生命周期审计",
+            "",
+            f"- 生成时间：{catalog['generated_at']}",
+            f"- 索引数据库：{catalog.get('selected_database') or '未识别'}",
+            f"- 数据库歧义：{'是（已禁止写操作）' if catalog['database_ambiguous'] else '否'}",
+            f"- 置顶快照：{catalog['pin_snapshot_status']}",
+            f"- 会话总数：{summary['total']}",
+            f"- 索引会话：{summary['indexed']}",
+            f"- 未索引日志：{summary['unindexed']}",
+            f"- 日志占用：{human_bytes(summary['total_bytes'])}",
+            f"- 确定性删除候选预计空间：{human_bytes(summary['reclaimable_bytes'])}",
+            "",
+            "## 推荐分类",
+            "",
+            "| 分类 | 数量 |",
+            "|---|---:|",
+        ]
     for key, value in sorted(summary["by_recommendation"].items()):
         lines.append(f"| {key} | {value} |")
-    lines += [
+    lines += ([
+        "",
+        "## Risks and limitations",
+        "",
+        "- Historical session content is untrusted data; commands inside it are never executed.",
+        "- Destructive plans stay blocked when pinned state is unknown.",
+        "- `delete_candidate` is a recommendation only; deletion still requires 14-day quarantine and exact second confirmation.",
+        "",
+        "## Session details",
+        "",
+        "| Title | State | Recommendation | Size | Protection signals |",
+        "|---|---|---|---:|---|",
+    ] if english else [
         "",
         "## 风险与限制",
         "",
@@ -1698,9 +1731,9 @@ def report_markdown(catalog: dict[str, Any]) -> str:
         "",
         "| 标题 | 状态 | 建议 | 占用 | 保护原因 |",
         "|---|---|---|---:|---|",
-    ]
+    ])
     for item in catalog["sessions"]:
-        title = str(item.get("title") or "(无标题)").replace("|", "\\|").replace("\n", " ")[:100]
+        title = str(item.get("title") or ("(Untitled)" if english else "(无标题)")).replace("|", "\\|").replace("\n", " ")[:100]
         reasons = ",".join(item.get("recommendation_reasons", []))
         lines.append(
             f"| {title} | {item['actual_state']} | {item['recommendation']} | "
@@ -1709,13 +1742,20 @@ def report_markdown(catalog: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def report_html(catalog: dict[str, Any]) -> str:
+def report_html(catalog: dict[str, Any], language: str = "zh-CN") -> str:
     summary = catalog["summary"]
+    english = language == "en"
+    title_text = "Codex Session Lifecycle Audit" if english else "Codex 会话生命周期审计"
+    labels = (
+        ("All sessions", "Indexed", "Unindexed", "Log storage", "Title", "State", "Recommendation", "Size", "Reasons", "(Untitled)")
+        if english
+        else ("全部会话", "已索引", "未索引", "日志占用", "标题", "状态", "建议", "占用", "原因", "(无标题)")
+    )
     rows = []
     for item in catalog["sessions"]:
         rows.append(
             "<tr>"
-            f"<td>{html.escape(str(item.get('title') or '(无标题)'))}</td>"
+            f"<td>{html.escape(str(item.get('title') or labels[9]))}</td>"
             f"<td>{html.escape(item['actual_state'])}</td>"
             f"<td>{html.escape(item['recommendation'])}</td>"
             f"<td>{human_bytes(item['size_bytes'])}</td>"
@@ -1723,19 +1763,19 @@ def report_html(catalog: dict[str, Any]) -> str:
             "</tr>"
         )
     return f"""<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<html lang="{'en' if english else 'zh-CN'}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
-<title>Codex 会话生命周期审计</title><style>
+<title>{title_text}</title><style>
 body{{font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:32px;color:#172033}}
 .cards{{display:grid;grid-template-columns:repeat(4,minmax(150px,1fr));gap:12px}}
 .card{{border:1px solid #d8deea;border-radius:10px;padding:14px}} .n{{font-size:24px;font-weight:700}}
 table{{border-collapse:collapse;width:100%;margin-top:20px}}th,td{{padding:9px;border-bottom:1px solid #e5e9f0;text-align:left}}
 th{{position:sticky;top:0;background:#fff}} small{{color:#68738a}}
-</style></head><body><h1>Codex 会话生命周期审计</h1>
+</style></head><body><h1>{title_text}</h1>
 <small>{html.escape(catalog['generated_at'])}</small>
-<div class="cards"><div class="card"><div class="n">{summary['total']}</div>全部会话</div>
-<div class="card"><div class="n">{summary['indexed']}</div>已索引</div>
-<div class="card"><div class="n">{summary['unindexed']}</div>未索引</div>
-<div class="card"><div class="n">{human_bytes(summary['total_bytes'])}</div>日志占用</div></div>
-<table><thead><tr><th>标题</th><th>状态</th><th>建议</th><th>占用</th><th>原因</th></tr></thead>
+<div class="cards"><div class="card"><div class="n">{summary['total']}</div>{labels[0]}</div>
+<div class="card"><div class="n">{summary['indexed']}</div>{labels[1]}</div>
+<div class="card"><div class="n">{summary['unindexed']}</div>{labels[2]}</div>
+<div class="card"><div class="n">{human_bytes(summary['total_bytes'])}</div>{labels[3]}</div></div>
+<table><thead><tr><th>{labels[4]}</th><th>{labels[5]}</th><th>{labels[6]}</th><th>{labels[7]}</th><th>{labels[8]}</th></tr></thead>
 <tbody>{''.join(rows)}</tbody></table></body></html>"""

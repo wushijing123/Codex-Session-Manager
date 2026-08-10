@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
+import zipfile
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,10 +30,15 @@ from lib.core import (  # noqa: E402
     collect_log_files,
     conversation_preview,
     inspect_conversation,
+    report_html,
+    report_markdown,
     scan_catalog,
 )
 from lib.server import DashboardState, plan_block_reason  # noqa: E402
 import session_actions  # noqa: E402
+import doctor  # noqa: E402
+import install_skill  # noqa: E402
+import package_release  # noqa: E402
 
 SESSION_ID = "01900000-0000-7000-8000-000000000001"
 
@@ -1223,6 +1232,97 @@ class SessionManagerTest(unittest.TestCase):
         self.assertEqual(helper, result["helper"])
         self.assertTrue(result["manual_exit_required"])
         self.assertEqual([], result["requested_apps"])
+
+    def test_dashboard_english_catalog_covers_static_and_dynamic_text(self) -> None:
+        html = (SKILL_DIR / "assets/dashboard/index.html").read_text(encoding="utf-8")
+        javascript = (SKILL_DIR / "assets/dashboard/app.js").read_text(encoding="utf-8")
+        translations = (SKILL_DIR / "assets/dashboard/i18n.js").read_text(encoding="utf-8")
+        keys = set(re.findall(r'^\s+"([^"]+)":', translations, flags=re.MULTILINE))
+        static_text = {
+            value.strip()
+            for value in re.findall(r">([^<>]+)<", html)
+            if re.search(r"[\u3400-\u9fff]", value)
+        }
+        static_attributes = set(
+            re.findall(
+                r'(?:placeholder|aria-label)="([^"]*[\u3400-\u9fff][^"]*)"',
+                html,
+            )
+        )
+        dynamic_text = {
+            value
+            for value in re.findall(r'\bt\("([^"]+)"', javascript)
+            if re.search(r"[\u3400-\u9fff]", value)
+        }
+        self.assertEqual(set(), (static_text | static_attributes | dynamic_text) - keys)
+        self.assertIn('id="languageBtn"', html)
+        self.assertIn('src="i18n.js"', html)
+        self.assertIn('src="app.js"', html)
+        self.assertLess(html.index('src="i18n.js"'), html.index('src="app.js"'))
+        self.assertIn('"/i18n.js"', (SKILL_DIR / "scripts/lib/server.py").read_text(encoding="utf-8"))
+
+    def test_reports_default_to_chinese_and_support_english(self) -> None:
+        catalog = scan_catalog(self.codex, self.app, self.pins)
+        self.assertIn("# Codex 会话生命周期审计", report_markdown(catalog))
+        english_markdown = report_markdown(catalog, "en")
+        english_html = report_html(catalog, "en")
+        self.assertIn("# Codex Session Lifecycle Audit", english_markdown)
+        self.assertIn("## Risks and limitations", english_markdown)
+        self.assertIn('<html lang="en">', english_html)
+        self.assertIn("Codex Session Lifecycle Audit", english_html)
+
+    def test_safe_installer_creates_and_verifies_shared_entry_links(self) -> None:
+        home = self.root / "home"
+        source = home / ".agents/skills" / install_skill.SKILL_NAME
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text("---\nname: test\ndescription: test\n---\n", encoding="utf-8")
+        args = SimpleNamespace(
+            source=source,
+            home=home,
+            targets=["all"],
+            dry_run=False,
+            verify=False,
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(0, install_skill.run(args))
+        for directory in install_skill.TARGET_DIRS.values():
+            target = home / directory / install_skill.SKILL_NAME
+            self.assertTrue(target.is_symlink())
+            self.assertEqual(source.resolve(), target.resolve())
+        args.verify = True
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(0, install_skill.run(args))
+
+    def test_safe_installer_never_overwrites_a_conflicting_entry(self) -> None:
+        home = self.root / "home"
+        source = home / ".agents/skills" / install_skill.SKILL_NAME
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text("valid", encoding="utf-8")
+        conflict = home / ".codex/skills" / install_skill.SKILL_NAME
+        conflict.mkdir(parents=True)
+        args = SimpleNamespace(
+            source=source,
+            home=home,
+            targets=["codex"],
+            dry_run=False,
+            verify=False,
+        )
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(1, install_skill.run(args))
+        self.assertTrue(conflict.is_dir())
+        self.assertFalse(conflict.is_symlink())
+
+    def test_doctor_and_release_package_validate_runtime_surface(self) -> None:
+        self.assertFalse([check for check in doctor.project_checks() if check.level == "fail"])
+        output = self.root / "dist"
+        archive = package_release.build_archive(output)
+        self.assertTrue(archive.is_file())
+        with zipfile.ZipFile(archive) as bundle:
+            names = bundle.namelist()
+        prefix = f"{package_release.SKILL_NAME}/"
+        self.assertEqual([f"{prefix}SKILL.md"], [name for name in names if name.endswith("SKILL.md")])
+        self.assertIn(f"{prefix}assets/dashboard/i18n.js", names)
+        self.assertNotIn(f"{prefix}tests/test_session_manager.py", names)
 
 
 if __name__ == "__main__":

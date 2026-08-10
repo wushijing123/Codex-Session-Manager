@@ -1,0 +1,30 @@
+name: 功能建议 / Feature request
+description: 建议与本地会话生命周期直接相关的改进。 / Suggest an improvement directly related to local session lifecycle management.
+title: "[Feature] "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 要解决的问题 / Problem to solve
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 最简单的方案 / Simplest proposed solution
+      description: 优先说明最少步骤的用户流程。 / Prefer the fewest-step user flow.
+    validations:
+      required: true
+  - type: dropdown
+    id: safety
+    attributes:
+      label: 是否影响真实会话 / Does it affect real sessions?
+      options:
+        - 否，只读 / No, read-only
+        - 只写计划 / Plans only
+        - 会移动或恢复文件 / Moves or restores files
+        - 可能永久删除 / May permanently delete
+        - 不确定 / Unsure
+    validations:
+      required: true

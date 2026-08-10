@@ -34,7 +34,7 @@ def common_parser(parser: argparse.ArgumentParser) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Codex session lifecycle manager")
+    parser = argparse.ArgumentParser(description="Codex 会话生命周期管理器 / Codex session lifecycle manager")
     sub = parser.add_subparsers(dest="command", required=True)
     scan = sub.add_parser("scan", help="Build a read-only session catalog")
     common_parser(scan)
@@ -44,6 +44,12 @@ def build_parser() -> argparse.ArgumentParser:
     report = sub.add_parser("report", help="Generate JSON, Markdown and HTML reports")
     common_parser(report)
     report.add_argument("--output-dir", type=Path)
+    report.add_argument(
+        "--lang",
+        choices=["zh-CN", "en"],
+        default="zh-CN",
+        help="Report language. Defaults to Chinese.",
+    )
 
     dashboard = sub.add_parser("dashboard", help="Launch token-gated localhost dashboard")
     common_parser(dashboard)
@@ -83,10 +89,10 @@ def main() -> int:
         output_dir.mkdir(parents=True, exist_ok=True)
         write_json(output_dir / "codex-session-audit.json", catalog)
         (output_dir / "codex-session-audit.md").write_text(
-            report_markdown(catalog), encoding="utf-8"
+            report_markdown(catalog, args.lang), encoding="utf-8"
         )
         (output_dir / "codex-session-audit.html").write_text(
-            report_html(catalog), encoding="utf-8"
+            report_html(catalog, args.lang), encoding="utf-8"
         )
         print(output_dir)
         return 2 if catalog["database_ambiguous"] else 0

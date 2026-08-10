@@ -1,0 +1,41 @@
+name: 错误报告 / Bug report
+description: 报告可复现的问题，不要上传真实会话正文或数据库。 / Report a reproducible issue without session content or databases.
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: "请先运行 `python scripts/doctor.py --project-only`。不要粘贴真实会话内容、数据库、令牌或本地绝对路径。\n\nRun the project doctor first. Do not include session content, databases, tokens, or private absolute paths."
+  - type: textarea
+    id: summary
+    attributes:
+      label: 问题 / Problem
+      description: 实际发生了什么？ / What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤 / Steps to reproduce
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期结果 / Expected result
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: 版本 / Version
+      placeholder: v0.3.0
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: 平台 / Platform
+      options: [macOS, Linux, Windows, Other]
+    validations:
+      required: true

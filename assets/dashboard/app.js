@@ -1,18 +1,22 @@
 (() => {
   "use strict";
 
+  const i18n = window.SessionManagerI18n;
+  const t = (source, variables) => i18n.t(source, variables);
+
   if (window.location.protocol === "file:") {
     window.addEventListener("DOMContentLoaded", () => {
-      document.title = "请从本地服务打开看板";
+      document.documentElement.lang = i18n.locale();
+      document.title = t("请从本地服务打开看板");
       document.body.className = "file-open-guide";
       document.body.textContent = "";
       const main = document.createElement("main");
       const card = document.createElement("article");
       card.className = "file-open-card";
       const title = document.createElement("h1");
-      title.textContent = "请从本地服务打开看板";
+      title.textContent = t("请从本地服务打开看板");
       const copy = document.createElement("p");
-      copy.textContent = "这个文件只是界面源码。回到 Codex，输入“打开会话生命周期看板”。";
+      copy.textContent = t("这个文件只是界面源码。回到 Codex，输入“打开会话生命周期看板”。");
       card.append(title, copy);
       main.append(card);
       document.body.append(main);
@@ -59,6 +63,8 @@
     no_destructive_plans: "没有可执行计划"
   };
 
+  const labelFor = key => t(labels[key] || key || "无");
+
   const stateColors = {
     active: "var(--blue)", archived: "var(--green)", cold: "var(--violet)", quarantine: "var(--amber)",
     unindexed: "var(--red)", missing: "var(--red)"
@@ -72,6 +78,48 @@
     if (text !== "") node.textContent = text;
     return node;
   };
+
+  const staticTextNodes = [];
+  const staticAttributes = [];
+
+  function registerStaticTranslations() {
+    const walker = document.createTreeWalker(document.documentElement, NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode())) {
+      const source = node.nodeValue.trim();
+      if (!source || !i18n.has(source)) continue;
+      node.__i18nSource = source;
+      staticTextNodes.push(node);
+    }
+    document.querySelectorAll("[placeholder], [aria-label]").forEach(element => {
+      ["placeholder", "aria-label"].forEach(attribute => {
+        const source = element.getAttribute(attribute);
+        if (source && i18n.has(source)) staticAttributes.push({element, attribute, source});
+      });
+    });
+  }
+
+  function translateStatic() {
+    document.documentElement.lang = i18n.locale();
+    staticTextNodes.forEach(node => {
+      const leading = node.nodeValue.match(/^\s*/)?.[0] || "";
+      const trailing = node.nodeValue.match(/\s*$/)?.[0] || "";
+      node.nodeValue = `${leading}${t(node.__i18nSource)}${trailing}`;
+    });
+    staticAttributes.forEach(({element, attribute, source}) => element.setAttribute(attribute, t(source)));
+    const button = $("#languageBtn");
+    button.textContent = i18n.locale() === "en" ? "中文" : "EN";
+    button.setAttribute("aria-label", t(i18n.locale() === "en" ? "切换为中文" : "切换为英文"));
+    document.title = t("Codex 会话生命周期");
+  }
+
+  function toggleLanguage() {
+    i18n.setLocale(i18n.locale() === "en" ? "zh-CN" : "en");
+    closeDrawer();
+    closeFinalConfirm();
+    translateStatic();
+    if (state.catalog) renderAll();
+  }
   const humanBytes = value => {
     let size = Math.max(0, Number(value) || 0);
     const units = ["B", "KiB", "MiB", "GiB", "TiB"];
@@ -82,19 +130,19 @@
   const shortDate = value => {
     const number = Number(value || 0);
     const date = new Date(number > 10_000_000_000 ? number : number * 1000);
-    return Number.isNaN(date.valueOf()) ? "—" : date.toLocaleDateString();
+    return Number.isNaN(date.valueOf()) ? "—" : date.toLocaleDateString(i18n.locale() === "en" ? "en-US" : "zh-CN");
   };
   const compactTitle = (value, maxLength = 80) => {
-    const normalized = String(value || "(无标题)").replace(/\s+/g, " ").trim();
+    const normalized = String(value || t("(无标题)")).replace(/\s+/g, " ").trim();
     return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 1)}…` : normalized;
   };
   const countdown = seconds => {
     const total = Math.max(0, Number(seconds) || 0);
     const days = Math.floor(total / 86400);
     const hours = Math.floor((total % 86400) / 3600);
-    return days ? `${days} 天 ${hours} 小时` : `${hours} 小时`;
+    return days ? t("{days} 天 {hours} 小时", {days, hours}) : t("{hours} 小时", {hours});
   };
-  const actionLabel = action => action === "cold_archive" ? "冷存档" : (labels[action] || action || "无");
+  const actionLabel = action => labelFor(action === "cold_archive" ? "cold_archive_action" : action);
   const planBlocked = session => session.actual_state === "active" || session.pinned || session.permanent_protection ||
     session.state_conflict || session.actual_state === "missing" || session.actual_state === "unindexed";
   const toast = message => {
@@ -110,7 +158,7 @@
     if (options.method === "POST") headers["X-CSRF-Token"] = state.csrf;
     const response = await fetch(path, {...options, headers});
     let data;
-    try { data = await response.json(); } catch { throw new Error("本地服务已断开"); }
+    try { data = await response.json(); } catch { throw new Error(t("本地服务已断开")); }
     if (!response.ok) throw new Error(data.error || "request_failed");
     return data;
   }
@@ -138,7 +186,7 @@
   function lifecycleEntries() {
     const byState = state.catalog.summary.by_state || {};
     return ["active", "archived", "cold", "quarantine", "unindexed", "missing"]
-      .map(key => ({key, label: labels[key], value: Number(byState[key] || 0), color: stateColors[key]}))
+      .map(key => ({key, label: labelFor(key), value: Number(byState[key] || 0), color: stateColors[key]}))
       .filter(item => item.value > 0);
   }
 
@@ -175,7 +223,7 @@
       const fill = el("div", `bar-fill rec-${key}`);
       fill.style.width = `${100 * value / max}%`;
       track.append(fill);
-      row.append(el("span", "", labels[key] || key), track, el("strong", "", String(value)));
+      row.append(el("span", "", labelFor(key)), track, el("strong", "", String(value)));
       chart.append(row);
     });
   }
@@ -204,10 +252,10 @@
   function renderAgeChart() {
     const bands = state.catalog.summary.archived_age_bands || {};
     const entries = [
-      ["7 天内", Number(bands.under_7 || 0)],
-      ["7–29 天", Number(bands.days_7_29 || 0)],
-      ["30–89 天", Number(bands.days_30_89 || 0)],
-      ["90 天+", Number(bands.days_90_plus || 0)]
+      [t("7 天内"), Number(bands.under_7 || 0)],
+      [t("7–29 天"), Number(bands.days_7_29 || 0)],
+      [t("30–89 天"), Number(bands.days_30_89 || 0)],
+      [t("90 天+"), Number(bands.days_90_plus || 0)]
     ];
     const max = Math.max(1, ...entries.map(([, value]) => value));
     const chart = $("#ageChart"); chart.replaceChildren();
@@ -234,28 +282,28 @@
 
     $("#homeTotal").textContent = String(summary.total);
     $("#homeStorage").textContent = humanBytes(summary.total_bytes);
-    $("#homeCandidates").textContent = `${autoEligible.length} 条`;
-    $("#homePlans").textContent = `${plans.length} 条`;
-    $("#homeHeroSummary").textContent = `${summary.by_state.active || 0} 条正在使用，${summary.by_state.archived || 0} 条已归档。系统发现 ${autoEligible.length} 条可安全加入整理计划。`;
-    $("#scanMeta").textContent = `更新于 ${new Date(catalog.generated_at).toLocaleString()}`;
+    $("#homeCandidates").textContent = t("{count} 条", {count: autoEligible.length});
+    $("#homePlans").textContent = t("{count} 条", {count: plans.length});
+    $("#homeHeroSummary").textContent = t("{active} 条正在使用，{archived} 条已归档。系统发现 {eligible} 条可安全加入整理计划。", {active: summary.by_state.active || 0, archived: summary.by_state.archived || 0, eligible: autoEligible.length});
+    $("#scanMeta").textContent = t("更新于 {time}", {time: new Date(catalog.generated_at).toLocaleString(i18n.locale() === "en" ? "en-US" : "zh-CN")});
 
     $("#metricGrid").replaceChildren(
-      metric("正在使用", String(summary.by_state.active || 0), "不会进入破坏性计划", "blue"),
-      metric("普通归档", String(summary.by_state.archived || 0), `${Math.round(100 * (summary.by_state.archived || 0) / Math.max(summary.total, 1))}% 的会话`, "green"),
-      metric("需要检查", String(issueCount), "未索引或状态冲突", issueCount ? "amber" : "green"),
-      metric("可整理空间", humanBytes(autoEligible.reduce((sum, item) => sum + Number(item.size_bytes || 0), 0)), "冷存档或先隔离", "violet")
+      metric(t("正在使用"), String(summary.by_state.active || 0), t("不会进入破坏性计划"), "blue"),
+      metric(t("普通归档"), String(summary.by_state.archived || 0), t("{percent}% 的会话", {percent: Math.round(100 * (summary.by_state.archived || 0) / Math.max(summary.total, 1))}), "green"),
+      metric(t("需要检查"), String(issueCount), t("未索引或状态冲突"), issueCount ? "amber" : "green"),
+      metric(t("可整理空间"), humanBytes(autoEligible.reduce((sum, item) => sum + Number(item.size_bytes || 0), 0)), t("冷存档或先隔离"), "violet")
     );
 
     const warning = $("#warningPanel");
     const issues = [];
-    if (catalog.database_ambiguous) issues.push("检测到多个同样可信的数据库，执行功能已关闭。");
-    if (catalog.pin_snapshot_status !== "snapshot") issues.push("置顶状态需要在真正执行前刷新；现在可以安全浏览和制定计划。");
+    if (catalog.database_ambiguous) issues.push(t("检测到多个同样可信的数据库，执行功能已关闭。"));
+    if (catalog.pin_snapshot_status !== "snapshot") issues.push(t("置顶状态需要在真正执行前刷新；现在可以安全浏览和制定计划。"));
     warning.classList.toggle("hidden", !issues.length);
     warning.textContent = issues.join(" ");
 
     const planningAllowed = Boolean(catalog.selected_database && !catalog.database_ambiguous);
     const gate = $("#gateBadge");
-    gate.textContent = catalog.mutation_allowed ? "可执行" : planningAllowed ? "可规划" : "只读";
+    gate.textContent = catalog.mutation_allowed ? t("可执行") : planningAllowed ? t("可规划") : t("只读");
     gate.classList.toggle("ok", catalog.mutation_allowed);
 
     const entries = lifecycleEntries();
@@ -266,11 +314,11 @@
 
     const facts = $("#integrityList"); facts.replaceChildren();
     [
-      ["数据库", catalog.database_ambiguous ? "存在歧义" : "识别正常", catalog.database_ambiguous ? "danger" : "safe"],
-      ["置顶保护", catalog.pin_snapshot_status === "snapshot" ? "已同步" : "执行前待同步", catalog.pin_snapshot_status === "snapshot" ? "safe" : "warn"],
-      ["未索引日志", String(summary.unindexed || 0), summary.unindexed ? "warn" : "safe"],
-      ["状态冲突", String(summary.state_conflicts || 0), summary.state_conflicts ? "warn" : "safe"],
-      ["父子任务组", String(summary.group_action_required || 0), summary.group_action_required ? "warn" : "safe"]
+      [t("数据库"), catalog.database_ambiguous ? t("存在歧义") : t("识别正常"), catalog.database_ambiguous ? "danger" : "safe"],
+      [t("置顶保护"), catalog.pin_snapshot_status === "snapshot" ? t("已同步") : t("执行前待同步"), catalog.pin_snapshot_status === "snapshot" ? "safe" : "warn"],
+      [t("未索引日志"), String(summary.unindexed || 0), summary.unindexed ? "warn" : "safe"],
+      [t("状态冲突"), String(summary.state_conflicts || 0), summary.state_conflicts ? "warn" : "safe"],
+      [t("父子任务组"), String(summary.group_action_required || 0), summary.group_action_required ? "warn" : "safe"]
     ].forEach(([key, value, tone]) => {
       const row = el("div");
       row.append(el("dt", "", key), el("dd", `fact-${tone}`, value));
@@ -281,19 +329,19 @@
     const nextText = $("#nextActionText");
     const nextButton = $("#nextActionBtn");
     if (plans.length) {
-      nextTitle.textContent = `核对 ${plans.length} 条执行计划`;
-      nextText.textContent = "计划还没有执行。进入下一页确认目标、空间和阻塞项。";
-      nextButton.textContent = "查看执行计划";
+      nextTitle.textContent = t("核对 {count} 条执行计划", {count: plans.length});
+      nextText.textContent = t("计划还没有执行。进入下一页确认目标、空间和阻塞项。");
+      nextButton.textContent = t("查看执行计划");
       nextButton.onclick = () => switchView("queue");
     } else if (autoEligible.length) {
-      nextTitle.textContent = `先整理 ${autoEligible.length} 条旧会话`;
-      nextText.textContent = "系统已经分好冷存档和 14 天隔离，你只需检查后加入计划。";
-      nextButton.textContent = "查看整理建议";
+      nextTitle.textContent = t("先整理 {count} 条旧会话", {count: autoEligible.length});
+      nextText.textContent = t("系统已经分好冷存档和 14 天隔离，你只需检查后加入计划。");
+      nextButton.textContent = t("查看整理建议");
       nextButton.onclick = () => switchView("sessions");
     } else {
-      nextTitle.textContent = "暂时不用处理";
-      nextText.textContent = "当前没有达到整理条件的普通归档。";
-      nextButton.textContent = "浏览全部会话";
+      nextTitle.textContent = t("暂时不用处理");
+      nextText.textContent = t("当前没有达到整理条件的普通归档。");
+      nextButton.textContent = t("浏览全部会话");
       nextButton.onclick = () => switchView("sessions");
     }
     $("#autoCount").textContent = String(autoEligible.length);
@@ -304,7 +352,7 @@
     const current = node.value;
     const first = node.options[0];
     node.replaceChildren(first);
-    [...new Set(values)].sort().forEach(value => node.append(new Option(labels[value] || value, value)));
+    [...new Set(values)].sort().forEach(value => node.append(new Option(labelFor(value), value)));
     node.value = [...node.options].some(option => option.value === current) ? current : "";
   }
 
@@ -336,39 +384,39 @@
     const rows = $("#sessionRows"); rows.replaceChildren();
     const filtered = filteredSessions();
     const visible = filtered.slice(0, state.explorerVisibleLimit);
-    $("#resultCount").textContent = `匹配 ${filtered.length} 条`;
+    $("#resultCount").textContent = t("匹配 {count} 条", {count: filtered.length});
     visible.forEach(session => {
       const row = el("tr");
       const titleCell = el("td", "title-cell");
       const open = el("button", "session-link");
-      open.setAttribute("aria-label", `查看会话：${session.title || "(无标题)"}`);
-      const title = el("strong", "", compactTitle(session.title)); title.title = session.title || "(无标题)";
+      open.setAttribute("aria-label", t("查看会话：{title}", {title: session.title || t("(无标题)")}));
+      const title = el("strong", "", compactTitle(session.title)); title.title = session.title || t("(无标题)");
       open.append(title, el("small", "", session.id));
       const hit = state.contentSearch?.byId.get(session.id);
       const first = hit?.excerpts?.[0];
       if (first) {
-        const role = first.role === "user" ? "用户" : first.role === "assistant" ? "Codex" : "工具产出";
-        open.append(el("small", "content-hit", `正文命中（${role}）：${first.excerpt}`));
+        const role = first.role === "user" ? t("用户") : first.role === "assistant" ? "Codex" : t("工具产出");
+        open.append(el("small", "content-hit", t("正文命中（{role}）：{excerpt}", {role, excerpt: first.excerpt})));
       }
       open.addEventListener("click", () => showDetail(session));
       titleCell.append(open); row.append(titleCell);
-      const actual = el("td"); actual.append(el("span", `state-pill${session.state_conflict ? " danger" : ""}`, labels[session.actual_state] || session.actual_state)); row.append(actual);
+      const actual = el("td"); actual.append(el("span", `state-pill${session.state_conflict ? " danger" : ""}`, labelFor(session.actual_state))); row.append(actual);
       const recommendationClass = planBlocked(session) ? " danger" : session.execution_blocker ? " warn" : session.recommendation === "high_value" ? " safe" : "";
-      const rec = el("td"); rec.append(el("span", `state-pill${recommendationClass}`, labels[session.recommendation] || session.recommendation)); row.append(rec);
+      const rec = el("td"); rec.append(el("span", `state-pill${recommendationClass}`, labelFor(session.recommendation))); row.append(rec);
       row.append(el("td", "", shortDate(session.updated_at)), el("td", "", humanBytes(session.size_bytes)), el("td", "", actionLabel(session.planned_action)));
       rows.append(row);
     });
-    $("#explorerTableStatus").textContent = filtered.length ? `已显示 ${visible.length} / ${filtered.length} 条` : "没有符合条件的会话";
+    $("#explorerTableStatus").textContent = filtered.length ? t("已显示 {shown} / {total} 条", {shown: visible.length, total: filtered.length}) : t("没有符合条件的会话");
     $("#loadMoreExplorerBtn").classList.toggle("hidden", visible.length >= filtered.length);
   }
 
   async function searchArchivedContent() {
     const query = $("#searchInput").value.trim();
-    if (query.length < 2) { toast("至少输入两个字"); return; }
+    if (query.length < 2) { toast(t("至少输入两个字")); return; }
     const button = $("#searchContentBtn");
     const status = $("#contentSearchStatus");
-    button.disabled = true; button.textContent = "搜索中…";
-    status.classList.remove("hidden"); status.textContent = "正在本地搜索归档正文，不会更改会话。";
+    button.disabled = true; button.textContent = t("搜索中…");
+    status.classList.remove("hidden"); status.textContent = t("正在本地搜索归档正文，不会更改会话。");
     try {
       const started = await api("/api/search-archived-content", {method: "POST", body: JSON.stringify({query, limit: 100})});
       const deadline = Date.now() + 5 * 60 * 1000;
@@ -377,35 +425,35 @@
         const progress = await api(`/api/search-archived-content/status?job=${encodeURIComponent(started.job_id)}`);
         const total = Math.max(0, Number(progress.total) || 0);
         const scanned = Math.min(total, Number(progress.scanned) || 0);
-        status.textContent = `已搜索 ${scanned} / ${total} 条，找到 ${Number(progress.matches) || 0} 条。`;
+        status.textContent = t("已搜索 {scanned} / {total} 条，找到 {matches} 条。", {scanned, total, matches: Number(progress.matches) || 0});
         if (progress.status === "complete") { data = progress.result; break; }
         if (progress.status === "error") throw new Error(progress.error || "content_search_failed");
         await new Promise(resolve => setTimeout(resolve, 350));
       }
-      if (!data) throw new Error("正文搜索超时，请缩小关键词范围");
+      if (!data) throw new Error(t("正文搜索超时，请缩小关键词范围"));
       state.contentSearch = {query: query.toLowerCase(), byId: new Map(data.matches.map(item => [item.session_id, item]))};
       state.explorerVisibleLimit = 50;
       renderExplorer();
-      status.textContent = data.matches.length ? `正文搜索完成：${data.matches.length} 条归档会话命中。` : `没有找到“${query}”。`;
+      status.textContent = data.matches.length ? t("正文搜索完成：{count} 条归档会话命中。", {count: data.matches.length}) : t("没有找到“{query}”。", {query});
     } catch (error) {
-      state.contentSearch = null; renderExplorer(); status.textContent = `正文搜索失败：${labels[error.message] || error.message}`;
+      state.contentSearch = null; renderExplorer(); status.textContent = t("正文搜索失败：{error}", {error: labelFor(error.message)});
     } finally {
-      button.disabled = false; button.textContent = "搜索归档正文";
+      button.disabled = false; button.textContent = t("搜索归档正文");
     }
   }
 
   function detailMetadata(session) {
     const details = el("details", "technical-details");
     const list = el("dl", "detail-grid");
-    details.append(el("summary", "", "技术详情"));
+    details.append(el("summary", "", t("技术详情")));
     [
-      ["Session ID", session.id], ["现状", labels[session.actual_state] || session.actual_state], ["建议", labels[session.recommendation] || session.recommendation],
-      ["计划", actionLabel(session.planned_action)], ["闲置", `${Number(session.age_days || 0)} 天`], ["占用", humanBytes(session.size_bytes)],
-      ["置顶", session.pinned ? "是" : session.pin_status], ["永久保护", session.permanent_protection ? "是" : "否"],
-      ["父子依赖", session.execution_blocker ? `${session.relation_count} 条 · ${labels[session.execution_blocker]}` : String(session.relation_count || 0)],
-      ["真实用户轮次", session.conversation_scanned ? String(session.business_turns) : "尚未完整扫描"],
-      ["Codex 复核", session.semantic_review ? `${labels[session.semantic_review.label] || session.semantic_review.label} · ${Math.round(100 * session.semantic_review.confidence)}%` : "尚未复核"],
-      ["项目", session.cwd || "—"], ["日志", session.rollout_path || "—"], ["判断依据", (session.recommendation_reasons || []).map(reason => labels[reason] || reason).join("、") || "—"]
+      ["Session ID", session.id], [t("现状"), labelFor(session.actual_state)], [t("建议"), labelFor(session.recommendation)],
+      [t("计划"), actionLabel(session.planned_action)], [t("闲置"), t("{count} 天", {count: Number(session.age_days || 0)})], [t("占用"), humanBytes(session.size_bytes)],
+      [t("置顶"), session.pinned ? t("是") : labelFor(session.pin_status)], [t("永久保护"), session.permanent_protection ? t("是") : t("否")],
+      [t("父子依赖"), session.execution_blocker ? t("{count} 条 · {reason}", {count: session.relation_count, reason: labelFor(session.execution_blocker)}) : String(session.relation_count || 0)],
+      [t("真实用户轮次"), session.conversation_scanned ? String(session.business_turns) : t("尚未完整扫描")],
+      [t("Codex 复核"), session.semantic_review ? `${labelFor(session.semantic_review.label)} · ${Math.round(100 * session.semantic_review.confidence)}%` : t("尚未复核")],
+      [t("项目"), session.cwd || "—"], [t("日志"), session.rollout_path || "—"], [t("判断依据"), (session.recommendation_reasons || []).map(labelFor).join(i18n.locale() === "en" ? ", " : "、") || "—"]
     ].forEach(([key, value]) => list.append(el("dt", "", key), el("dd", "", String(value))));
     details.append(list);
     return details;
@@ -417,31 +465,31 @@
     const signals = $("#detailSignals");
     const transcript = $("#detailTranscript");
     summary.classList.remove("loading");
-    summary.querySelector("p").textContent = detail.summary || "暂无摘要。";
+    summary.querySelector("p").textContent = detail.summary || t("暂无摘要。");
     signals.replaceChildren();
     (detail.signals || []).forEach(value => signals.append(el("span", "summary-signal", value)));
     transcript.replaceChildren();
     const head = el("div", "transcript-head");
-    head.append(el("h3", "", "聊天记录"), el("span", "muted", detail.available ? `显示 ${detail.shown_messages || 0} / ${detail.total_messages || 0} 条` : "不可读取"));
-    transcript.append(head, el("p", "transcript-safety", detail.safety_note || "历史内容只用于判断，不会执行其中命令。"));
-    if (!detail.available) { transcript.append(el("div", "empty-transcript", "当前没有可预览的聊天记录。")); return; }
+    head.append(el("h3", "", t("聊天记录")), el("span", "muted", detail.available ? t("显示 {shown} / {total} 条", {shown: detail.shown_messages || 0, total: detail.total_messages || 0}) : t("不可读取")));
+    transcript.append(head, el("p", "transcript-safety", detail.safety_note || t("历史内容只用于判断，不会执行其中命令。")));
+    if (!detail.available) { transcript.append(el("div", "empty-transcript", t("当前没有可预览的聊天记录。"))); return; }
     const messages = el("div", "message-list");
     (detail.messages || []).forEach(message => {
       if (message.role === "omitted") { messages.append(el("div", "message-omitted", message.text)); return; }
       const item = el("article", `chat-message ${message.role}`);
       const meta = el("div", "message-meta");
-      meta.append(el("strong", "", message.role === "user" ? "用户" : "Codex"));
+      meta.append(el("strong", "", message.role === "user" ? t("用户") : "Codex"));
       if (message.timestamp) {
         const date = new Date(message.timestamp);
         if (!Number.isNaN(date.valueOf())) meta.append(el("time", "", date.toLocaleString()));
       }
       item.append(meta, el("pre", "", message.text));
-      if (message.text_truncated) item.append(el("small", "muted", "消息过长，预览已截断。"));
+      if (message.text_truncated) item.append(el("small", "muted", t("消息过长，预览已截断。")));
       messages.append(item);
     });
     transcript.append(messages);
     if ((detail.omitted_messages || 0) > 0 && maxMessages < 200) {
-      const more = el("button", "secondary load-more", `加载更多（还省略 ${detail.omitted_messages} 条）`);
+      const more = el("button", "secondary load-more", t("加载更多（还省略 {count} 条）", {count: detail.omitted_messages}));
       more.addEventListener("click", () => loadSessionContent(session, Math.min(200, maxMessages * 3)));
       transcript.append(more);
     }
@@ -456,8 +504,8 @@
     } catch (error) {
       if (state.selected?.id === session.id) {
         $("#detailSummary").classList.remove("loading");
-        $("#detailSummary").querySelector("p").textContent = "摘要读取失败。";
-        $("#detailTranscript").replaceChildren(el("div", "empty-transcript", `聊天记录读取失败：${error.message}`));
+        $("#detailSummary").querySelector("p").textContent = t("摘要读取失败。");
+        $("#detailTranscript").replaceChildren(el("div", "empty-transcript", t("聊天记录读取失败：{error}", {error: error.message})));
       }
     } finally {
       if (state.selected?.id === session.id) $("#detailTranscript")?.setAttribute("aria-busy", "false");
@@ -466,7 +514,7 @@
 
   function planButton(session, action, label, className = "secondary") {
     const active = session.planned_action === action;
-    const button = el("button", `${className}${active ? " selected-action" : ""}`, active ? `取消${label}` : label);
+    const button = el("button", `${className}${active ? " selected-action" : ""}`, active ? t("取消{label}", {label}) : label);
     button.addEventListener("click", () => plan(session.id, active ? null : action));
     return button;
   }
@@ -476,31 +524,31 @@
     state.selected = session;
     const detailTitle = $("#detailTitle");
     detailTitle.textContent = compactTitle(session.title, 96);
-    detailTitle.title = session.title || "(无标题)";
+    detailTitle.title = session.title || t("(无标题)");
     const body = $("#detailBody");
     const summary = el("section", "detail-summary loading"); summary.id = "detailSummary";
     const summaryHead = el("div", "summary-head");
-    summaryHead.append(el("h3", "", "快速摘要"), el("span", "summary-source", "本地规则"));
-    summary.append(summaryHead, el("p", "", "正在读取对应聊天日志…"));
+    summaryHead.append(el("h3", "", t("快速摘要")), el("span", "summary-source", t("本地规则")));
+    summary.append(summaryHead, el("p", "", t("正在读取对应聊天日志…")));
     const signals = el("div", "summary-signals"); signals.id = "detailSignals"; summary.append(signals);
     const transcript = el("section", "transcript"); transcript.id = "detailTranscript"; transcript.setAttribute("aria-live", "polite");
-    transcript.append(el("div", "empty-transcript", "正在加载聊天记录…"));
+    transcript.append(el("div", "empty-transcript", t("正在加载聊天记录…")));
     const actions = el("section", "drawer-actions");
-    actions.append(el("h3", "drawer-action-title", "选择下一步"));
-    const protect = el("button", "secondary", session.permanent_protection ? "解除永久保护" : "永久保护");
+    actions.append(el("h3", "drawer-action-title", t("选择下一步")));
+    const protect = el("button", "secondary", session.permanent_protection ? t("解除永久保护") : t("永久保护"));
     protect.addEventListener("click", () => toggleProtect(session.id, !session.permanent_protection));
     actions.append(protect);
     const actionButtonsShown = session.actual_state === "archived" && !planBlocked(session) && !session.relation_count;
     if (actionButtonsShown) {
       actions.append(
-        planButton(session, "cold_archive", "冷存档"),
-        planButton(session, "quarantine", "隔离 14 天"),
-        planButton(session, "permanent_delete", "永久删除", "danger-button")
+        planButton(session, "cold_archive", t("冷存档")),
+        planButton(session, "quarantine", t("隔离 14 天")),
+        planButton(session, "permanent_delete", t("永久删除"), "danger-button")
       );
     }
     const currentPlanAlreadyShown = actionButtonsShown && ["cold_archive", "quarantine", "permanent_delete"].includes(session.planned_action);
     if (session.planned_action && !currentPlanAlreadyShown) {
-      const clearPlan = el("button", "secondary", "清除旧计划");
+      const clearPlan = el("button", "secondary", t("清除旧计划"));
       clearPlan.addEventListener("click", () => plan(session.id, null));
       actions.append(clearPlan);
     }
@@ -526,8 +574,8 @@
       const data = await api("/api/plan", {method: "POST", body: JSON.stringify({session_id: id, action})});
       state.catalog = data.catalog; state.confirmationSheet = null; state.manifests = [];
       renderAll(); closeDrawer(); await loadAutoPreview();
-      toast(action ? `已加入计划：${actionLabel(action)}` : "已取消计划");
-    } catch (error) { toast(labels[error.message] || `计划失败：${error.message}`); }
+      toast(action ? t("已加入计划：{action}", {action: actionLabel(action)}) : t("已取消计划"));
+    } catch (error) { toast(labels[error.message] ? labelFor(error.message) : t("计划失败：{error}", {error: error.message})); }
   }
 
   async function toggleProtect(id, enabled) {
@@ -535,8 +583,8 @@
       const data = await api("/api/protect", {method: "POST", body: JSON.stringify({session_id: id, enabled})});
       state.catalog = data.catalog; state.confirmationSheet = null; state.manifests = [];
       renderAll(); closeDrawer(); await loadAutoPreview();
-      toast(enabled ? "已永久保护" : "已解除永久保护");
-    } catch (error) { toast(`操作失败：${error.message}`); }
+      toast(enabled ? t("已永久保护") : t("已解除永久保护"));
+    } catch (error) { toast(t("操作失败：{error}", {error: error.message})); }
   }
 
   function closeFinalConfirm() {
@@ -576,11 +624,11 @@
   }
 
   function permanentDeleteStatus(session) {
-    if (session.planned_action === "permanent_delete" || (session.planned_action === "purge_after_quarantine" && session.actual_state === "archived")) return "等待永久删除确认";
-    if (session.actual_state !== "quarantine") return "等待进入 14 天隔离";
-    if (session.purge_eligible) return "隔离已到期";
-    if (session.quarantine_remaining_seconds != null) return `还剩 ${countdown(session.quarantine_remaining_seconds)}`;
-    return "隔离时间待校验";
+    if (session.planned_action === "permanent_delete" || (session.planned_action === "purge_after_quarantine" && session.actual_state === "archived")) return t("等待永久删除确认");
+    if (session.actual_state !== "quarantine") return t("等待进入 14 天隔离");
+    if (session.purge_eligible) return t("隔离已到期");
+    if (session.quarantine_remaining_seconds != null) return t("还剩 {time}", {time: countdown(session.quarantine_remaining_seconds)});
+    return t("隔离时间待校验");
   }
 
   function renderQueue() {
@@ -592,25 +640,25 @@
       !(session.planned_action === "purge_after_quarantine" && session.actual_state === "quarantine"));
     const appendPlan = (container, session, legacy = false) => {
       const item = el("article", `queue-item${session.execution_blocker ? " blocked" : ""}${legacy ? " legacy" : ""}`);
-      const status = legacy ? "旧版标记，仅记录，不会在这里执行" : session.execution_blocker ? labels[session.execution_blocker] :
+      const status = legacy ? t("旧版标记，仅记录，不会在这里执行") : session.execution_blocker ? labelFor(session.execution_blocker) :
         ["permanent_delete", "purge_after_quarantine"].includes(session.planned_action) ? permanentDeleteStatus(session) : actionLabel(session.planned_action);
       const title = el("strong", "", compactTitle(session.title || session.id)); title.title = session.title || session.id;
       item.append(title, el("span", "", status), el("span", "", humanBytes(session.size_bytes)));
       if (session.planned_action === "purge_after_quarantine" && session.actual_state === "quarantine" && session.purge_eligible) {
-        const purge = el("button", "danger-button", "永久删除"); purge.addEventListener("click", () => requestPurge(session.id)); item.append(purge);
+        const purge = el("button", "danger-button", t("永久删除")); purge.addEventListener("click", () => requestPurge(session.id)); item.append(purge);
       }
-      const cancel = el("button", "secondary", "取消计划"); cancel.addEventListener("click", () => plan(session.id, null)); item.append(cancel);
+      const cancel = el("button", "secondary", t("取消计划")); cancel.addEventListener("click", () => plan(session.id, null)); item.append(cancel);
       container.append(item);
     };
     currentPlans.forEach(session => appendPlan(list, session));
     if (!currentPlans.length) {
       const empty = el("section", "empty-state");
-      empty.append(el("h2", "", "还没有可执行计划"), el("p", "muted", "先去“会话”查看系统建议，加入计划后再回来确认。"));
-      const button = el("button", "", "查看整理建议"); button.addEventListener("click", () => switchView("sessions")); empty.append(button); list.append(empty);
+      empty.append(el("h2", "", t("还没有可执行计划")), el("p", "muted", t("先去“会话”查看系统建议，加入计划后再回来确认。")));
+      const button = el("button", "", t("查看整理建议")); button.addEventListener("click", () => switchView("sessions")); empty.append(button); list.append(empty);
     }
     if (legacyPlans.length) {
       const legacy = el("details", "panel legacy-plans");
-      legacy.append(el("summary", "", `${legacyPlans.length} 条旧版标记（不会执行）`));
+      legacy.append(el("summary", "", t("{count} 条旧版标记（不会执行）", {count: legacyPlans.length})));
       const legacyList = el("div", "queue-list");
       legacyPlans.forEach(session => appendPlan(legacyList, session, true));
       legacy.append(legacyList); list.append(legacy);
@@ -618,7 +666,7 @@
     $("#plannedBytes").textContent = humanBytes(actionable.reduce((sum, session) => sum + Number(session.size_bytes || 0), 0));
     $("#planCount").textContent = String(currentPlans.length);
     $("#prepareBtn").disabled = !actionable.length;
-    $("#capabilityNotice").textContent = "计划不会自动执行。确认单会再次检查置顶、父子关系、数据库和 Codex 进程；永久删除始终需要额外确认。";
+    $("#capabilityNotice").textContent = t("计划不会自动执行。确认单会再次检查置顶、父子关系、数据库和 Codex 进程；永久删除始终需要额外确认。");
     renderConfirmationSheet(); renderManifests();
   }
 
@@ -629,16 +677,16 @@
     host.classList.remove("hidden");
     const panel = el("section", "confirmation-panel");
     const head = el("div", "confirmation-head");
-    const title = el("div"); title.append(el("p", "eyebrow", "LOCAL OPERATION RECEIPT"), el("h2", "", "本次操作确认单"));
-    head.append(title, el("span", "state-pill", sheet.confirmed ? "已确认" : sheet.can_execute ? "等待二次确认" : "存在阻塞")); panel.append(head);
+    const title = el("div"); title.append(el("p", "eyebrow", "LOCAL OPERATION RECEIPT"), el("h2", "", t("本次操作确认单")));
+    head.append(title, el("span", "state-pill", sheet.confirmed ? t("已确认") : sheet.can_execute ? t("等待二次确认") : t("存在阻塞"))); panel.append(head);
     const metrics = el("div", "confirmation-metrics");
-    [["冷存档", sheet.counts.cold_archive], ["14 天隔离", sheet.counts.quarantine], ["永久删除", sheet.counts.permanent_delete], ["影响空间", humanBytes(sheet.total_bytes)]]
+    [[t("冷存档"), sheet.counts.cold_archive], [t("14 天隔离"), sheet.counts.quarantine], [t("永久删除"), sheet.counts.permanent_delete], [t("影响空间"), humanBytes(sheet.total_bytes)]]
       .forEach(([label, value]) => { const item = el("div"); item.append(el("span", "", label), el("strong", "", String(value))); metrics.append(item); });
     panel.append(metrics);
-    if (sheet.counts.permanent_delete) panel.append(el("div", "danger-callout", `${sheet.counts.permanent_delete} 条会话会直接永久删除，不经过隔离期。`));
+    if (sheet.counts.permanent_delete) panel.append(el("div", "danger-callout", t("{count} 条会话会直接永久删除，不经过隔离期。", {count: sheet.counts.permanent_delete})));
     if (sheet.warnings.length) {
       const warning = el("section", "receipt-section warning-section");
-      warning.append(el("h3", "", `${sheet.warnings.length} 条永久删除项可能重要`), el("p", "muted", "请逐条看完，再决定是否继续。"));
+      warning.append(el("h3", "", t("{count} 条永久删除项可能重要", {count: sheet.warnings.length})), el("p", "muted", t("请逐条看完，再决定是否继续。")));
       const rows = el("div", "receipt-rows");
       sheet.warnings.forEach(entry => {
         const row = el("article", "receipt-row"); row.append(el("strong", "", entry.title), el("span", "", entry.reasons.join("；")), el("small", "", humanBytes(entry.size_bytes))); rows.append(row);
@@ -647,19 +695,19 @@
     }
     if (sheet.blockers.length) {
       const blocked = el("section", "receipt-section blocker-section");
-      blocked.append(el("h3", "", `${sheet.blockers.length} 个阻塞需要先解决`));
-      const list = el("ul"); sheet.blockers.forEach(entry => list.append(el("li", "", entry.message || labels[entry.code] || entry.code))); blocked.append(list); panel.append(blocked);
+      blocked.append(el("h3", "", t("{count} 个阻塞需要先解决", {count: sheet.blockers.length})));
+      const list = el("ul"); sheet.blockers.forEach(entry => list.append(el("li", "", entry.message || labelFor(entry.code)))); blocked.append(list); panel.append(blocked);
     }
     const confirm = el("section", "local-confirm");
-    confirm.append(el("p", "", sheet.confirmed ? "已生成不可变执行单。" : "下一步只生成执行单，仍不会立刻移动或删除会话。"));
-    const button = el("button", "", sheet.confirmed ? "已生成执行单" : "二次确认");
+    confirm.append(el("p", "", sheet.confirmed ? t("已生成不可变执行单。") : t("下一步只生成执行单，仍不会立刻移动或删除会话。")));
+    const button = el("button", "", sheet.confirmed ? t("已生成执行单") : t("二次确认"));
     button.disabled = sheet.confirmed || !sheet.can_execute;
     button.addEventListener("click", () => openFinalConfirm({
-      title: sheet.counts.permanent_delete ? "确认生成永久删除执行单？" : "确认生成执行单？",
-      body: `本次包含 ${sheet.total_count} 条会话。真正执行时仍会等待 Codex 完全退出。`,
-      warning: sheet.counts.permanent_delete ? `${sheet.counts.permanent_delete} 条会话执行后无法恢复。` : "",
-      acknowledgement: sheet.warnings.length ? "我已逐条检查可能重要的会话，仍确认继续" : "",
-      confirmLabel: "确认并生成执行单", trigger: button,
+      title: sheet.counts.permanent_delete ? t("确认生成永久删除执行单？") : t("确认生成执行单？"),
+      body: t("本次包含 {count} 条会话。真正执行时仍会等待 Codex 完全退出。", {count: sheet.total_count}),
+      warning: sheet.counts.permanent_delete ? t("{count} 条会话执行后无法恢复。", {count: sheet.counts.permanent_delete}) : "",
+      acknowledgement: sheet.warnings.length ? t("我已逐条检查可能重要的会话，仍确认继续") : "",
+      confirmLabel: t("确认并生成执行单"), trigger: button,
       onConfirm: acknowledged => confirmOperationSheet(sheet, acknowledged)
     }));
     confirm.append(button); panel.append(confirm); host.append(panel);
@@ -669,17 +717,17 @@
     const list = $("#manifestList"); list.replaceChildren();
     state.manifests.forEach(manifest => {
       const item = el("article", "manifest-item");
-      item.append(el("strong", "", `${actionLabel(manifest.action)} · ${manifest.session_ids.length} 条 · ${humanBytes(manifest.bytes)}`));
-      const launch = el("button", "", "退出 Codex 并执行");
+      item.append(el("strong", "", t("{action} · {count} 条 · {bytes}", {action: actionLabel(manifest.action), count: manifest.session_ids.length, bytes: humanBytes(manifest.bytes)})));
+      const launch = el("button", "", t("退出 Codex 并执行"));
       launch.addEventListener("click", () => launchAndQuitHelper(manifest, manifest.confirmation_phrase)); item.append(launch);
-      item.append(el("small", "muted", manifest.action === "permanent_delete" ? "没有恢复期。失败时使用临时副本回滚。" : "执行助手会等待 Codex 完全退出。"));
+      item.append(el("small", "muted", manifest.action === "permanent_delete" ? t("没有恢复期。失败时使用临时副本回滚。") : t("执行助手会等待 Codex 完全退出。")));
       list.append(item);
     });
     state.purgeRequests.forEach(request => {
       const item = el("article", "manifest-item purge-confirm");
-      item.append(el("strong", "", `隔离到期 · ${request.session_id}`));
-      const launch = el("button", "danger-button", "永久删除");
-      launch.addEventListener("click", () => openFinalConfirm({title: "确认永久删除隔离包？", body: "只保留脱敏审计记录。", warning: "删除后无法恢复。", confirmLabel: "确认永久删除", trigger: launch, onConfirm: () => launchPurge(request)}));
+      item.append(el("strong", "", t("隔离到期 · {id}", {id: request.session_id})));
+      const launch = el("button", "danger-button", t("永久删除"));
+      launch.addEventListener("click", () => openFinalConfirm({title: t("确认永久删除隔离包？"), body: t("只保留脱敏审计记录。"), warning: t("删除后无法恢复。"), confirmLabel: t("确认永久删除"), trigger: launch, onConfirm: () => launchPurge(request)}));
       item.append(launch); list.append(item);
     });
   }
@@ -688,15 +736,15 @@
     try {
       const data = await api("/api/purge-request", {method: "POST", body: JSON.stringify({session_id: sessionId})});
       state.purgeRequests = [...state.purgeRequests.filter(item => item.session_id !== sessionId), data.request];
-      renderManifests(); toast("已准备最终确认");
-    } catch (error) { toast(`无法准备永久删除：${labels[error.message] || error.message}`); }
+      renderManifests(); toast(t("已准备最终确认"));
+    } catch (error) { toast(t("无法准备永久删除：{error}", {error: labelFor(error.message)})); }
   }
 
   async function launchPurge(request) {
     try {
       const data = await api("/api/launch-purge", {method: "POST", body: JSON.stringify({session_id: request.session_id, second_confirmation: true})});
-      toast(`永久删除助手已启动，PID ${data.helper.pid}`); return true;
-    } catch (error) { toast(`永久删除未启动：${labels[error.message] || error.message}`); return false; }
+      toast(t("永久删除助手已启动，PID {pid}", {pid: data.helper.pid})); return true;
+    } catch (error) { toast(t("永久删除未启动：{error}", {error: labelFor(error.message)})); return false; }
   }
 
   async function prepareConfirmationSheet() {
@@ -704,7 +752,7 @@
       const data = await api("/api/confirmation-sheet", {method: "POST", body: "{}"});
       state.confirmationSheet = data.sheet; state.manifests = []; renderQueue();
       $("#confirmationSheet").scrollIntoView({behavior: "smooth", block: "start"});
-    } catch (error) { toast(`确认单生成失败：${labels[error.message] || error.message}`); }
+    } catch (error) { toast(t("确认单生成失败：{error}", {error: labelFor(error.message)})); }
   }
 
   async function confirmOperationSheet(sheet, warningsAcknowledged) {
@@ -712,34 +760,34 @@
       const data = await api("/api/confirm-sheet", {method: "POST", body: JSON.stringify({sheet_id: sheet.sheet_id, warnings_acknowledged: warningsAcknowledged, second_confirmation: true})});
       sheet.confirmed = true; state.manifests = data.manifests; renderQueue();
       $("#manifestList").scrollIntoView({behavior: "smooth", block: "start"});
-      toast(`已生成 ${state.manifests.length} 个执行单`); return true;
-    } catch (error) { toast(`二次确认未通过：${labels[error.message] || error.message}`); return false; }
+      toast(t("已生成 {count} 个执行单", {count: state.manifests.length})); return true;
+    } catch (error) { toast(t("二次确认未通过：{error}", {error: labelFor(error.message)})); return false; }
   }
 
   async function launchAndQuitHelper(manifest, confirmation) {
     try {
       const data = await api("/api/launch-and-quit", {method: "POST", body: JSON.stringify({manifest: manifest.path, confirmation})});
-      if (data.manual_exit_required) toast(`执行助手已启动（PID ${data.helper.pid}），请手动完全退出 Codex`);
-      else toast(`执行助手已启动（PID ${data.helper.pid}），正在退出 Codex`);
-    } catch (error) { toast(`执行助手未启动：${labels[error.message] || error.message}`); }
+      if (data.manual_exit_required) toast(t("执行助手已启动（PID {pid}），请手动完全退出 Codex", {pid: data.helper.pid}));
+      else toast(t("执行助手已启动（PID {pid}），正在退出 Codex", {pid: data.helper.pid}));
+    } catch (error) { toast(t("执行助手未启动：{error}", {error: labelFor(error.message)})); }
   }
 
   function renderReviewMetrics() {
     const summary = state.catalog.summary;
     const node = $("#reviewMetrics"); node.replaceChildren();
-    [["已扫描", summary.conversation_scanned || 0], ["3 轮以内", summary.short_conversations || 0], ["Codex 已复核", summary.codex_reviewed || 0], ["一次性", summary.codex_one_off || 0]]
+    [[t("已扫描"), summary.conversation_scanned || 0], [t("3 轮以内"), summary.short_conversations || 0], [t("Codex 已复核"), summary.codex_reviewed || 0], [t("一次性"), summary.codex_one_off || 0]]
       .forEach(([label, value]) => node.append(el("span", "", `${label} ${value}`)));
   }
 
   async function prepareReviewBundle() {
-    const button = $("#prepareReviewBtn"); button.disabled = true; button.textContent = "正在扫描…";
+    const button = $("#prepareReviewBtn"); button.disabled = true; button.textContent = t("正在扫描…");
     try {
       const data = await api("/api/review-bundle", {method: "POST", body: JSON.stringify({max_turns: Number($("#reviewMaxTurns").value)})});
       state.catalog = data.catalog; renderAll();
       const notice = $("#reviewBundleNotice"); notice.classList.remove("hidden");
-      notice.replaceChildren(el("strong", "", `发现 ${data.summary.short_conversations} 条短对话，其中 ${data.summary.clean_one_off_candidates} 条没有写入或附件。`), el("code", "", data.bundle_path), el("span", "", "回到 Codex 输入“复核一次性对话”。"));
-    } catch (error) { toast(`短对话扫描失败：${error.message}`); }
-    finally { button.disabled = false; button.textContent = "准备复核包"; }
+      notice.replaceChildren(el("strong", "", t("发现 {short} 条短对话，其中 {clean} 条没有写入或附件。", {short: data.summary.short_conversations, clean: data.summary.clean_one_off_candidates})), el("code", "", data.bundle_path), el("span", "", t("回到 Codex 输入“复核一次性对话”。")));
+    } catch (error) { toast(t("短对话扫描失败：{error}", {error: error.message})); }
+    finally { button.disabled = false; button.textContent = t("准备复核包"); }
   }
 
   function renderAuto() {
@@ -749,38 +797,38 @@
     const eligible = preview.proposals.filter(item => !item.blocked_reason);
     const cold = eligible.filter(item => item.action === "cold_archive").length;
     const quarantine = eligible.filter(item => item.action === "quarantine").length;
-    $("#autoHeadline").textContent = eligible.length ? `建议整理 ${eligible.length} 条旧会话` : "当前没有需要自动整理的会话";
-    $("#autoSummary").textContent = eligible.length ? `${cold} 条冷存档，${quarantine} 条先隔离 14 天。加入计划后仍需你确认才会执行。` : "可以继续浏览全部会话，或调整闲置时间设置。";
+    $("#autoHeadline").textContent = eligible.length ? t("建议整理 {count} 条旧会话", {count: eligible.length}) : t("当前没有需要自动整理的会话");
+    $("#autoSummary").textContent = eligible.length ? t("{cold} 条冷存档，{quarantine} 条先隔离 14 天。加入计划后仍需你确认才会执行。", {cold, quarantine}) : t("可以继续浏览全部会话，或调整闲置时间设置。");
     $("#autoMetricGrid").replaceChildren(
-      metric("冷存档", String(cold), "保留内容，移出当前索引", "violet"),
-      metric("先隔离", String(quarantine), "14 天内可恢复", "amber"),
-      metric("涉及空间", humanBytes(eligible.reduce((sum, item) => sum + Number(item.size_bytes || 0), 0)), "按真实日志大小", "blue")
+      metric(t("冷存档"), String(cold), t("保留内容，移出当前索引"), "violet"),
+      metric(t("先隔离"), String(quarantine), t("14 天内可恢复"), "amber"),
+      metric(t("涉及空间"), humanBytes(eligible.reduce((sum, item) => sum + Number(item.size_bytes || 0), 0)), t("按真实日志大小"), "blue")
     );
     const gate = $("#autoGateNotice");
     gate.classList.toggle("hidden", preview.planning_allowed && preview.execution_ready);
-    gate.textContent = !preview.planning_allowed ? "数据库识别存在歧义，现在只能浏览。" : !preview.execution_ready ? "可以先加入计划；真正执行前需要刷新置顶状态。" : "";
+    gate.textContent = !preview.planning_allowed ? t("数据库识别存在歧义，现在只能浏览。") : !preview.execution_ready ? t("可以先加入计划；真正执行前需要刷新置顶状态。") : "";
     const rows = $("#autoProposalRows"); rows.replaceChildren();
     const visible = preview.proposals.slice(0, state.auto.visibleLimit);
     visible.forEach(item => {
       const row = el("tr", item.blocked_reason ? "blocked" : "");
       row.classList.toggle("selected", state.auto.selected.has(item.session_id));
       const checkCell = el("td");
-      const check = el("input"); check.type = "checkbox"; check.checked = state.auto.selected.has(item.session_id); check.disabled = Boolean(item.blocked_reason); check.setAttribute("aria-label", `选择 ${item.title}`);
+      const check = el("input"); check.type = "checkbox"; check.checked = state.auto.selected.has(item.session_id); check.disabled = Boolean(item.blocked_reason); check.setAttribute("aria-label", t("选择 {title}", {title: item.title}));
       check.addEventListener("change", () => { if (check.checked) state.auto.selected.add(item.session_id); else state.auto.selected.delete(item.session_id); renderAuto(); });
       const hit = el("label", "check-hit"); hit.append(check); checkCell.append(hit); row.append(checkCell);
       const session = state.catalog.sessions.find(value => value.id === item.session_id);
       const titleCell = el("td", "proposal-title"); const title = el("strong", "", compactTitle(item.title)); title.title = item.title;
-      titleCell.append(title, el("small", "", `${item.session_id} · 闲置 ${Number(session?.age_days || 0)} 天`)); row.append(titleCell);
+      titleCell.append(title, el("small", "", t("{id} · 闲置 {days} 天", {id: item.session_id, days: Number(session?.age_days || 0)}))); row.append(titleCell);
       const action = el("td"); action.append(el("span", `action-pill ${item.action}`, actionLabel(item.action))); row.append(action);
-      const reasons = item.reasons.filter(reason => reason !== "pin_snapshot_unavailable_or_stale").map(reason => labels[reason] || reason);
-      if (item.blocked_reason) reasons.push(`阻断：${labels[item.blocked_reason] || item.blocked_reason}`);
-      row.append(el("td", "proposal-reason", reasons.join("、") || "规则命中"), el("td", "", humanBytes(item.size_bytes))); rows.append(row);
+      const reasons = item.reasons.filter(reason => reason !== "pin_snapshot_unavailable_or_stale").map(labelFor);
+      if (item.blocked_reason) reasons.push(t("阻断：{reason}", {reason: labelFor(item.blocked_reason)}));
+      row.append(el("td", "proposal-reason", reasons.join(i18n.locale() === "en" ? ", " : "、") || t("规则命中")), el("td", "", humanBytes(item.size_bytes))); rows.append(row);
     });
-    if (!preview.proposals.length) { const row = el("tr"); const cell = el("td", "muted", "没有候选会话。" ); cell.colSpan = 5; row.append(cell); rows.append(row); }
-    $("#autoTableStatus").textContent = `显示 ${visible.length} / ${preview.proposals.length}（${eligible.length} 条可处理）`;
+    if (!preview.proposals.length) { const row = el("tr"); const cell = el("td", "muted", t("没有候选会话。") ); cell.colSpan = 5; row.append(cell); rows.append(row); }
+    $("#autoTableStatus").textContent = t("显示 {shown} / {total}（{eligible} 条可处理）", {shown: visible.length, total: preview.proposals.length, eligible: eligible.length});
     $("#loadMoreAutoBtn").classList.toggle("hidden", visible.length >= preview.proposals.length);
     const selected = preview.proposals.filter(item => state.auto.selected.has(item.session_id) && !item.blocked_reason);
-    $("#autoSelectedSummary").textContent = `${selected.length} 条 · ${humanBytes(selected.reduce((sum, item) => sum + item.size_bytes, 0))}`;
+    $("#autoSelectedSummary").textContent = t("{count} 条 · {bytes}", {count: selected.length, bytes: humanBytes(selected.reduce((sum, item) => sum + item.size_bytes, 0))});
     $("#applyAutoPlanBtn").disabled = !selected.length || !preview.planning_allowed;
     $("#autoCount").textContent = String(eligible.length);
   }
@@ -792,7 +840,7 @@
       state.auto.preview = data.preview;
       state.auto.selected = new Set(data.preview.proposals.filter(item => item.selected).map(item => item.session_id));
       renderAuto(); renderHome();
-    } catch (error) { toast(`整理建议生成失败：${error.message}`); }
+    } catch (error) { toast(t("整理建议生成失败：{error}", {error: error.message})); }
     finally { $("#autoLoading").classList.add("hidden"); }
   }
 
@@ -809,16 +857,16 @@
       const data = await api("/api/auto-apply", {method: "POST", body: JSON.stringify({preset: "space", items})});
       state.catalog = data.catalog; state.confirmationSheet = null; state.manifests = [];
       renderAll(); await loadAutoPreview(); switchView("queue");
-      toast(`已加入 ${data.applied} 条计划，尚未移动或删除任何会话`);
-    } catch (error) { toast(labels[error.message] || `批量计划失败：${error.message}`); }
+      toast(t("已加入 {count} 条计划，尚未移动或删除任何会话", {count: data.applied}));
+    } catch (error) { toast(labels[error.message] ? labelFor(error.message) : t("批量计划失败：{error}", {error: error.message})); }
   }
 
   async function clearAutoPlans() {
     try {
       const data = await api("/api/auto-clear", {method: "POST", body: "{}"});
       state.catalog = data.catalog; state.confirmationSheet = null; state.manifests = [];
-      renderAll(); await loadAutoPreview(); toast(`已清除 ${data.removed} 条自动计划`);
-    } catch (error) { toast(`清除失败：${error.message}`); }
+      renderAll(); await loadAutoPreview(); toast(t("已清除 {count} 条自动计划", {count: data.removed}));
+    } catch (error) { toast(t("清除失败：{error}", {error: error.message})); }
   }
 
   function renderAll() {
@@ -828,13 +876,13 @@
   }
 
   async function refreshCatalog() {
-    const button = $("#refreshBtn"); button.disabled = true; button.textContent = "刷新中…";
+    const button = $("#refreshBtn"); button.disabled = true; button.textContent = t("刷新中…");
     try {
       const data = await api("/api/refresh", {method: "POST", body: "{}"});
       state.catalog = data.catalog; state.confirmationSheet = null; state.manifests = [];
-      renderAll(); await loadAutoPreview(); toast("已刷新本机会话");
-    } catch (error) { toast(`刷新失败：${error.message}`); }
-    finally { button.disabled = false; button.textContent = "刷新"; }
+      renderAll(); await loadAutoPreview(); toast(t("已刷新本机会话"));
+    } catch (error) { toast(t("刷新失败：{error}", {error: error.message})); }
+    finally { button.disabled = false; button.textContent = t("刷新"); }
   }
 
   function exportPlan() {
@@ -850,7 +898,10 @@
     renderAll(); switchView("home"); await loadAutoPreview();
   }
 
+  registerStaticTranslations();
+  translateStatic();
   $$(".tab").forEach(node => node.addEventListener("click", () => switchView(node.dataset.view)));
+  $("#languageBtn").addEventListener("click", toggleLanguage);
   $("#refreshBtn").addEventListener("click", refreshCatalog);
   $("#openSessionsBtn").addEventListener("click", () => switchView("sessions"));
   $("#openQueueBtn").addEventListener("click", () => switchView("queue"));
@@ -884,11 +935,11 @@
     try {
       const data = await api("/api/settings", {method: "POST", body: JSON.stringify(payload)});
       state.settings = data.settings; state.catalog = data.catalog; state.confirmationSheet = null; state.manifests = [];
-      renderAll(); await loadAutoPreview(); toast("设置已保存");
-    } catch (error) { toast(labels[error.message] || error.message); }
+      renderAll(); await loadAutoPreview(); toast(t("设置已保存"));
+    } catch (error) { toast(labelFor(error.message)); }
   });
 
   initialize().catch(error => {
-    const main = $("#mainContent"); main.replaceChildren(el("section", "empty-state", `看板初始化失败：${error.message}`));
+    const main = $("#mainContent"); main.replaceChildren(el("section", "empty-state", t("看板初始化失败：{error}", {error: error.message})));
   });
 })();

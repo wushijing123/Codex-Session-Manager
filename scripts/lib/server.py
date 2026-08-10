@@ -1142,7 +1142,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/":
             return self.send_asset("index.html")
-        if parsed.path in {"/style.css", "/app.js"}:
+        if parsed.path in {"/style.css", "/i18n.js", "/app.js"}:
             return self.send_asset(parsed.path.removeprefix("/"))
         if parsed.path.startswith("/assets/"):
             return self.send_asset(parsed.path.removeprefix("/assets/"))

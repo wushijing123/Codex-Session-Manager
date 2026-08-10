@@ -146,6 +146,7 @@ h2 { font-size: 18px; line-height: 1.25; }
 .tab.active { background: var(--surface); color: var(--text); box-shadow: 0 1px 3px rgba(18, 32, 51, .1); }
 .tab span { min-width: 20px; padding: 1px 6px; border-radius: 999px; background: var(--blue-soft); color: var(--blue); font-variant-numeric: tabular-nums; }
 .toolbar { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.language-button { min-width: 48px; }
 .badge { min-height: 32px; display: inline-flex; align-items: center; padding: 5px 10px; border-radius: 999px; background: var(--amber-soft); color: var(--amber); font-size: 12px; font-weight: 700; }
 .badge.ok { background: var(--green-soft); color: var(--green); }
 
