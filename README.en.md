@@ -11,9 +11,35 @@ A local-first, safety-layered, visual lifecycle manager for Codex sessions. It h
 
 ## Why this project exists
 
-Codex session state is distributed across databases, active logs, archived logs, parent-child relationships, and pinned state. The sidebar alone cannot reliably tell you what remains valuable, what can be organized safely, or what an operation will affect.
+The more useful Codex becomes, the easier it is for sessions to get out of control.
 
-The dashboard keeps complexity in the background and exposes only four destinations:
+What starts as a handful of conversations can quietly grow into hundreds: long-running projects, quick experiments, failed attempts, automation runs, child tasks, and valuable conclusions all mixed together. They clutter the sidebar and keep consuming local storage. Archiving usually removes a conversation from the everyday view, but it does not reclaim disk space or create a real retention policy.
+
+### Problems you may already recognize
+
+| Real situation | User pain |
+| --- | --- |
+| Sessions keep accumulating | Logs, tool outputs, and attachments can grow to hundreds of items and several gigabytes without one storage overview |
+| “I know we discussed this, but I cannot find it” | Archived conversations leave the everyday sidebar, and retrieval is difficult when you remember the content but not the title |
+| Archive is mistaken for cleanup | The interface looks tidier while the local files remain and no disk space is actually reclaimed |
+| Disposable chats and valuable work are mixed | One-off tests, failed attempts, long-running projects, and important conclusions have no clear lifecycle classification |
+| You want to clean up but are afraid to delete | It is unclear which sessions are active, pinned, valuable, or connected through parent-child dependencies |
+| The sidebar and local files disagree | Database indexes, active logs, archived logs, and app state may diverge; some records may not appear in the sidebar at all |
+| You want to move old projects to external storage | You need space back now, but also a verifiable path to restore the content later |
+| Hundreds of sessions must be handled one by one | There is no shared retention policy, batch inventory, or explainable recommendation layer |
+| After deletion, there is no proof of what happened | There is no quarantine period, restore path, operation manifest, hash verification, or audit trail |
+| Sessions contain private material | Source code, client data, business thinking, and account details should not be uploaded to a third-party cleanup service |
+
+The real need is not a bulk-delete button. It is four simple outcomes:
+
+1. **Find it again** — recover a conversation by its real content even when its title is forgotten or it has been archived
+2. **Know the difference** — separate protected work, cold-storage candidates, and items that still need review
+3. **Reclaim space** — understand storage usage and move or quarantine old content safely
+4. **Avoid the wrong deletion** — see dependencies, risks, impact, and recovery boundaries before any irreversible action
+
+The difficulty is that Codex session state is distributed across databases, active logs, archived logs, parent-child relationships, and pinned state. The sidebar alone cannot answer these questions reliably, while direct file operations can leave broken indexes, severed dependencies, or accidental data loss.
+
+This project therefore treats sessions as stateful digital assets with different levels of value, not as a folder of disposable files. It keeps the complexity in the background and exposes only four destinations:
 
 1. **Home** — lifecycle, recommendations, storage, archive age, and safety health
 2. **Sessions** — one recommended plan plus on-demand conversation details
