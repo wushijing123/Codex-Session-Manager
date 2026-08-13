@@ -18,6 +18,7 @@ flowchart TB
     CLI[session_manager.py] --> CORE[lib/core.py]
     API --> STATE[DashboardState]
     STATE --> CORE
+    STATE -->|Regular unarchive| CODEXCLI[Official Codex CLI]
     STATE --> PLAN[Local plan/settings stores]
     STATE --> MANIFEST[Immutable manifest preparation]
     MANIFEST --> ACTIONS[session_actions.py]
@@ -42,6 +43,7 @@ flowchart TB
 - Uses a one-time launch token for initial authorization
 - Requires a CSRF token for every POST request
 - Manages settings, plans, receipts, and manifests
+- Uses only the official Codex CLI for regular unarchive, then verifies with a new scan
 - Never bypasses the action script to mutate real data
 
 ### `scripts/session_actions.py`
@@ -101,6 +103,7 @@ Candidates are evaluated by schema, recency, thread count, matching log count, a
 - Cold storage/restore, quarantine/restore, and permanent deletion
 - Interrupted rollback, hash drift, and schema drift
 - Content-search and conversation-preview safety
+- Exact-ID, state-gate, and rescan coverage for official unarchive
 - Chinese/English translation coverage
 - Installer conflicts, Doctor, and release package structure
 - macOS process gate and helper state

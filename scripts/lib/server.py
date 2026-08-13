@@ -8,6 +8,7 @@ import json
 import mimetypes
 import os
 import secrets
+import shutil
 import subprocess
 import sys
 import threading
@@ -124,6 +125,42 @@ class DashboardState:
             (item for item in self.catalog.get("sessions", []) if item["id"] == session_id),
             None,
         )
+
+    def unarchive_session(self, session_id: str) -> dict[str, Any]:
+        with self.lock:
+            record = self.record_for(session_id)
+            if not record:
+                raise ValueError("unknown_session")
+            if record.get("actual_state") != "archived" or record.get("state_conflict"):
+                raise PermissionError("unarchive_requires_plain_archive")
+
+        codex = shutil.which("codex")
+        if not codex:
+            raise ValueError("codex_cli_unavailable")
+        try:
+            result = subprocess.run(
+                [codex, "unarchive", session_id],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env={**os.environ, "CODEX_HOME": str(self.codex_home)},
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            code = (
+                "official_unarchive_timeout"
+                if isinstance(error, subprocess.TimeoutExpired)
+                else "codex_cli_unavailable"
+            )
+            raise ValueError(code) from error
+        if result.returncode != 0:
+            raise ValueError("official_unarchive_failed")
+
+        catalog = self.refresh()
+        refreshed = self.record_for(session_id)
+        if not refreshed or refreshed.get("actual_state") == "archived":
+            raise ValueError("official_unarchive_not_verified")
+        return catalog
 
     def session_detail(self, session_id: str, max_messages: int = 24) -> dict[str, Any]:
         max_messages = min(200, max(4, int(max_messages)))
@@ -1125,6 +1162,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "capabilities": {
                         "detail_planning": True,
                         "manifest_prepare": True,
+                        "official_unarchive": bool(shutil.which("codex")),
                         "indexed_restore_to_codex": False,
                         "reason": "真实关闭应用后的恢复闭环尚未通过，因此保持禁用。",
                     },
@@ -1195,6 +1233,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 result = self.state.set_protected(
                     str(payload["session_id"]), bool(payload.get("enabled"))
                 )
+                self.send_json({"ok": True, "catalog": result})
+                return
+            if self.path == "/api/unarchive":
+                result = self.state.unarchive_session(str(payload["session_id"]).lower())
                 self.send_json({"ok": True, "catalog": result})
                 return
             if self.path == "/api/settings":

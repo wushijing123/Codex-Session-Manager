@@ -674,6 +674,8 @@ class SessionManagerTest(unittest.TestCase):
         self.assertNotIn("固定本地确认短语", javascript)
         self.assertIn("confirm_sheet_button", (SKILL_DIR / "scripts/lib/server.py").read_text(encoding="utf-8"))
         self.assertIn('api("/api/refresh"', javascript)
+        self.assertIn('api("/api/unarchive"', javascript)
+        self.assertIn('t("取消归档")', javascript)
         self.assertIn('switchView("home")', javascript)
         self.assertIn("visibleLimit: 25", javascript)
         self.assertIn("explorerVisibleLimit: 50", javascript)
@@ -686,6 +688,61 @@ class SessionManagerTest(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("@media (prefers-reduced-motion: reduce)", stylesheet)
+
+    def test_official_unarchive_uses_exact_session_id_and_refreshes(self) -> None:
+        dashboard = DashboardState(
+            self.codex,
+            self.app,
+            SKILL_DIR / "assets/dashboard",
+            self.pins,
+            False,
+        )
+        active_catalog = deepcopy(dashboard.catalog)
+        active_record = next(
+            item for item in active_catalog["sessions"] if item["id"] == SESSION_ID
+        )
+        active_record["actual_state"] = "active"
+        active_record["archived"] = False
+
+        def refresh() -> dict[str, object]:
+            dashboard.catalog = active_catalog
+            return active_catalog
+
+        completed = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        with (
+            mock.patch("lib.server.shutil.which", return_value="/usr/local/bin/codex"),
+            mock.patch("lib.server.subprocess.run", return_value=completed) as run,
+            mock.patch.object(dashboard, "refresh", side_effect=refresh),
+        ):
+            result = dashboard.unarchive_session(SESSION_ID)
+
+        self.assertEqual(
+            "active",
+            next(item for item in result["sessions"] if item["id"] == SESSION_ID)[
+                "actual_state"
+            ],
+        )
+        self.assertEqual(
+            ["/usr/local/bin/codex", "unarchive", SESSION_ID],
+            run.call_args.args[0],
+        )
+        self.assertFalse(run.call_args.kwargs["check"])
+        self.assertEqual(str(self.codex), run.call_args.kwargs["env"]["CODEX_HOME"])
+
+    def test_official_unarchive_rejects_non_archived_session(self) -> None:
+        dashboard = DashboardState(
+            self.codex,
+            self.app,
+            SKILL_DIR / "assets/dashboard",
+            self.pins,
+            False,
+        )
+        record = next(
+            item for item in dashboard.catalog["sessions"] if item["id"] == SESSION_ID
+        )
+        record["actual_state"] = "active"
+        with self.assertRaisesRegex(PermissionError, "unarchive_requires_plain_archive"):
+            dashboard.unarchive_session(SESSION_ID)
 
     def test_wal_rows_are_visible_and_duplicate_titles_remain_distinct(self) -> None:
         sessions = self.codex / "sessions/2026/07/25"

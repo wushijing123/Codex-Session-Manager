@@ -60,7 +60,9 @@
     planned_actions_changed_after_review: "确认后状态已变化，请重新生成确认单", confirmation_sheet_has_blockers: "确认单仍有执行阻塞",
     helper_already_running: "执行助手已在等待", important_warnings_not_acknowledged: "请先勾选知情确认",
     cold_storage_target_required: "请先在设置中选择冷存档目录", database_selection_required: "数据库识别未通过",
-    no_destructive_plans: "没有可执行计划"
+    no_destructive_plans: "没有可执行计划", unarchive_requires_plain_archive: "只有普通归档会话才能取消归档",
+    codex_cli_unavailable: "未找到支持取消归档的 Codex CLI", official_unarchive_failed: "Codex 官方取消归档失败",
+    official_unarchive_timeout: "Codex 官方取消归档超时", official_unarchive_not_verified: "取消归档后未通过重新扫描验证"
   };
 
   const labelFor = key => t(labels[key] || key || "无");
@@ -535,6 +537,13 @@
     transcript.append(el("div", "empty-transcript", t("正在加载聊天记录…")));
     const actions = el("section", "drawer-actions");
     actions.append(el("h3", "drawer-action-title", t("选择下一步")));
+    if (session.actual_state === "archived") {
+      const unarchive = el("button", "secondary", t("取消归档"));
+      unarchive.disabled = !state.capabilities.official_unarchive || Boolean(session.state_conflict);
+      if (unarchive.disabled) unarchive.title = t(session.state_conflict ? "状态冲突时不能取消归档" : "当前 Codex CLI 不支持取消归档");
+      unarchive.addEventListener("click", () => unarchiveSession(session, unarchive));
+      actions.append(unarchive);
+    }
     const protect = el("button", "secondary", session.permanent_protection ? t("解除永久保护") : t("永久保护"));
     protect.addEventListener("click", () => toggleProtect(session.id, !session.permanent_protection));
     actions.append(protect);
@@ -585,6 +594,21 @@
       renderAll(); closeDrawer(); await loadAutoPreview();
       toast(enabled ? t("已永久保护") : t("已解除永久保护"));
     } catch (error) { toast(t("操作失败：{error}", {error: error.message})); }
+  }
+
+  async function unarchiveSession(session, button) {
+    button.disabled = true;
+    button.textContent = t("正在取消归档…");
+    try {
+      const data = await api("/api/unarchive", {method: "POST", body: JSON.stringify({session_id: session.id})});
+      state.catalog = data.catalog; state.confirmationSheet = null; state.manifests = [];
+      renderAll(); closeDrawer(); await loadAutoPreview();
+      toast(t("已取消归档，Session 已回到 Codex"));
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = t("取消归档");
+      toast(t("取消归档失败：{error}", {error: labelFor(error.message)}));
+    }
   }
 
   function closeFinalConfirm() {

@@ -38,13 +38,17 @@ Opening a session reads one regular log on demand. The UI shows only real user m
 
 ### 4. Plan
 
-UI actions change `planned_action` only. They never move or delete files immediately. Legacy `archive` and `unarchive` markers are collapsed as non-executable history.
+Cold storage, quarantine, and permanent deletion actions only change `planned_action`; they never move or delete files immediately. Unarchiving a regular archived session is the exception: the detail action calls the official `codex unarchive SESSION_ID` command and rescans on success without editing SQLite directly. Legacy `archive` and `unarchive` plan markers remain non-executable history.
 
 ### 5. Confirm and execute
 
 The receipt rescans and checks the database, pinned state, relationships, actual state, log paths, and size. Second confirmation creates immutable manifests. The action script rechecks hashes and Codex processes.
 
 ## Lifecycle actions
+
+### Unarchive a regular session
+
+The detail view exposes **Unarchive** for regular archived sessions. It passes only the exact scanned session ID to the official Codex CLI and rescans after success. Conflicting, unindexed, cold-stored, or quarantined sessions cannot use this path.
 
 ### Permanent protection
 

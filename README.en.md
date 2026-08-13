@@ -7,7 +7,7 @@
 
 A local-first, safety-layered, visual lifecycle manager for Codex sessions. It helps you understand session state, organize archived history, reclaim storage, and see every safety check before any real move or deletion occurs.
 
-> Current version: `0.3.0`. The dashboard defaults to Chinese and can be switched to English from the top-right corner.
+> Current version: `0.4.0`. The dashboard defaults to Chinese and can be switched to English from the top-right corner.
 
 ## Why this project exists
 
@@ -55,6 +55,7 @@ This project therefore treats sessions as stateful digital assets with different
 | Chinese and English | Chinese by default; the selected language is persisted locally |
 | Safe recommendations | Valuable history goes to cold storage; low-value content is quarantined for 14 days first |
 | On-demand content view | Reads only user messages, final Codex responses, and allowed tool outputs |
+| Official unarchive | Returns a regular archived session to Codex from its detail view, then rescans automatically |
 | Semantic review bundle | Extracts minimum content from conversations with up to three user turns |
 | Layered actions | Permanent protection, cold storage, quarantine, restore, and manual permanent deletion |
 | Double confirmation | Plan, receipt, second confirmation, immutable manifest, and process gate |
@@ -116,6 +117,7 @@ See [workflows](docs/WORKFLOWS.en.md) for the full user and release flows.
 ```mermaid
 flowchart LR
     A[Active session] -->|Official Codex archive| B[Regular archive]
+    B -->|Official Codex unarchive| A
     B -->|Keep content outside index| C[Cold storage]
     B -->|Recoverable cleanup| D[14-day quarantine]
     C -->|Validated restore| B

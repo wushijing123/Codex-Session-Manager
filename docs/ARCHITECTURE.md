@@ -18,6 +18,7 @@ flowchart TB
     CLI[session_manager.py] --> CORE[lib/core.py]
     API --> STATE[DashboardState]
     STATE --> CORE
+    STATE -->|普通取消归档| CODEXCLI[Codex 官方 CLI]
     STATE --> PLAN[Local plan/settings stores]
     STATE --> MANIFEST[Immutable manifest preparation]
     MANIFEST --> ACTIONS[session_actions.py]
@@ -42,6 +43,7 @@ flowchart TB
 - 使用一次性 launch token 建立会话
 - 所有 POST 请求要求 CSRF token
 - 管理设置、计划、确认单和 manifest
+- 普通取消归档只调用 Codex 官方 CLI，并重新扫描验证
 - 不直接绕过动作脚本修改真实数据
 
 ### `scripts/session_actions.py`
@@ -101,6 +103,7 @@ flowchart TB
 - 冷存档/恢复、隔离/恢复、永久删除
 - 中断回滚、hash 漂移、schema 漂移
 - 正文搜索和聊天预览安全
+- 官方取消归档的精确 ID、状态门与重新扫描
 - 中英翻译覆盖
 - 安装冲突保护、Doctor 和发布包结构
 - macOS 进程门与执行助手状态
