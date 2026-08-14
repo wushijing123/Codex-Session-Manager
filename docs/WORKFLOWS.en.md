@@ -38,7 +38,7 @@ Opening a session reads one regular log on demand. The UI shows only real user m
 
 ### 4. Plan
 
-Cold storage, quarantine, and permanent deletion actions only change `planned_action`; they never move or delete files immediately. Unarchiving a regular archived session is the exception: the detail action calls the official `codex unarchive SESSION_ID` command and rescans on success without editing SQLite directly. Legacy `archive` and `unarchive` plan markers remain non-executable history.
+Cold storage, quarantine, and permanent deletion actions only change `planned_action`; they never move or delete files immediately. Unarchiving a regular archived session is the exception: the detail action calls the official `codex unarchive SESSION_ID` command and then rescans without editing SQLite directly. The verified state wins over the CLI exit code: a returned session is reported as successful, while a session that remains archived is reported as failed. Legacy `archive` and `unarchive` plan markers remain non-executable history.
 
 ### 5. Confirm and execute
 
@@ -110,8 +110,9 @@ Report directories are ignored by Git. Never commit real reports.
 5. Create and push a tag matching VERSION
 
 ```bash
-git tag -a v0.3.0 -m "Release v0.3.0"
-git push origin v0.3.0
+release_version=$(cat VERSION)
+git tag -a "v${release_version}" -m "Release v${release_version}"
+git push origin "v${release_version}"
 ```
 
 The Release workflow validates again, builds the runtime ZIP, and creates or updates the GitHub Release.

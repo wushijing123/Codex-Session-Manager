@@ -43,7 +43,7 @@ flowchart TB
 - 使用一次性 launch token 建立会话
 - 所有 POST 请求要求 CSRF token
 - 管理设置、计划、确认单和 manifest
-- 普通取消归档只调用 Codex 官方 CLI，并重新扫描验证
+- 普通取消归档只调用 Codex 官方 CLI，并以重新扫描后的真实状态作为最终结果
 - 不直接绕过动作脚本修改真实数据
 
 ### `scripts/session_actions.py`

@@ -60,6 +60,9 @@
     planned_actions_changed_after_review: "确认后状态已变化，请重新生成确认单", confirmation_sheet_has_blockers: "确认单仍有执行阻塞",
     helper_already_running: "执行助手已在等待", important_warnings_not_acknowledged: "请先勾选知情确认",
     cold_storage_target_required: "请先在设置中选择冷存档目录", database_selection_required: "数据库识别未通过",
+    directory_picker_unavailable: "当前系统不支持目录选择器", directory_picker_timeout: "目录选择超时，请重试",
+    directory_picker_failed: "无法打开目录选择器", directory_picker_invalid_selection: "选择的目录不可用",
+    unsafe_storage_target: "该目录不能作为冷存档位置",
     no_destructive_plans: "没有可执行计划", unarchive_requires_plain_archive: "只有普通归档会话才能取消归档",
     codex_cli_unavailable: "未找到支持取消归档的 Codex CLI", official_unarchive_failed: "Codex 官方取消归档失败",
     official_unarchive_timeout: "Codex 官方取消归档超时", official_unarchive_not_verified: "取消归档后未通过重新扫描验证"
@@ -909,6 +912,29 @@
     finally { button.disabled = false; button.textContent = t("刷新"); }
   }
 
+  async function chooseColdStorageDirectory() {
+    const button = $("#chooseColdStorageBtn");
+    const status = $("#coldStorageStatus");
+    button.disabled = true;
+    button.textContent = t("选择中…");
+    status.textContent = t("正在打开系统文件夹选择器…");
+    try {
+      const data = await api("/api/select-directory", {method: "POST", body: "{}"});
+      if (!data.selected) {
+        status.textContent = t("已取消选择，原目录未更改。");
+        return;
+      }
+      $("#coldStorageDir").value = data.path;
+      status.textContent = t("已选择，可用空间 {bytes}。点击“保存设置”后生效。", {bytes: humanBytes(data.free_bytes)});
+    } catch (error) {
+      status.textContent = "";
+      toast(labels[error.message] ? labelFor(error.message) : t("目录选择失败：{error}", {error: error.message}));
+    } finally {
+      button.disabled = !state.capabilities.native_directory_picker;
+      button.textContent = t("选择目录");
+    }
+  }
+
   function exportPlan() {
     const plans = state.catalog.sessions.filter(session => session.planned_action).map(session => ({session_id: session.id, title: session.title, actual_state: session.actual_state, planned_action: session.planned_action, size_bytes: session.size_bytes, hard_protected: session.hard_protected}));
     const blob = new Blob([JSON.stringify({schema_version: 1, generated_at: new Date().toISOString(), plans}, null, 2)], {type: "application/json"});
@@ -919,6 +945,9 @@
     const data = await api("/api/bootstrap");
     state.csrf = data.csrf; state.catalog = data.catalog; state.settings = data.settings; state.capabilities = data.capabilities;
     Object.entries(state.settings).forEach(([key, value]) => { const node = $(`[name="${key}"]`); if (node) node.value = value; });
+    const picker = $("#chooseColdStorageBtn");
+    picker.disabled = !state.capabilities.native_directory_picker;
+    if (picker.disabled) picker.title = t("当前系统不支持目录选择器");
     renderAll(); switchView("home"); await loadAutoPreview();
   }
 
@@ -927,6 +956,7 @@
   $$(".tab").forEach(node => node.addEventListener("click", () => switchView(node.dataset.view)));
   $("#languageBtn").addEventListener("click", toggleLanguage);
   $("#refreshBtn").addEventListener("click", refreshCatalog);
+  $("#chooseColdStorageBtn").addEventListener("click", chooseColdStorageDirectory);
   $("#openSessionsBtn").addEventListener("click", () => switchView("sessions"));
   $("#openQueueBtn").addEventListener("click", () => switchView("queue"));
   $("#selectAllAutoBtn").addEventListener("click", () => setAutoSelection(true));

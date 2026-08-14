@@ -7,7 +7,7 @@
 
 A local-first, safety-layered, visual lifecycle manager for Codex sessions. It helps you understand session state, organize archived history, reclaim storage, and see every safety check before any real move or deletion occurs.
 
-> Current version: `0.4.0`. The dashboard defaults to Chinese and can be switched to English from the top-right corner.
+> Current version: `0.5.0`. The dashboard defaults to Chinese and can be switched to English from the top-right corner.
 
 ## Why this project exists
 
@@ -44,7 +44,7 @@ This project therefore treats sessions as stateful digital assets with different
 1. **Home** — lifecycle, recommendations, storage, archive age, and safety health
 2. **Sessions** — one recommended plan plus on-demand conversation details
 3. **Plan** — impact review, second confirmation, and immutable execution manifests
-4. **Settings** — inactivity thresholds, automation retention, and cold storage paths
+4. **Settings** — inactivity thresholds, automation retention, and a native cold-storage folder picker
 
 ## Highlights
 
@@ -55,7 +55,8 @@ This project therefore treats sessions as stateful digital assets with different
 | Chinese and English | Chinese by default; the selected language is persisted locally |
 | Safe recommendations | Valuable history goes to cold storage; low-value content is quarantined for 14 days first |
 | On-demand content view | Reads only user messages, final Codex responses, and allowed tool outputs |
-| Official unarchive | Returns a regular archived session to Codex from its detail view, then rescans automatically |
+| Official unarchive | Returns a regular archived session to Codex and trusts the verified rescan state instead of a misleading CLI exit code |
+| Native folder picker | Selects a macOS external-storage folder, shows free space, and leaves settings unchanged when canceled |
 | Semantic review bundle | Extracts minimum content from conversations with up to three user turns |
 | Layered actions | Permanent protection, cold storage, quarantine, restore, and manual permanent deletion |
 | Double confirmation | Plan, receipt, second confirmation, immutable manifest, and process gate |
@@ -143,6 +144,7 @@ A plan is never displayed as if it already happened.
 - Database identity, log hashes, pinned state, and Codex processes are rechecked before execution
 - Historical content is untrusted data and commands inside it are never executed
 - Databases, JSONL logs, quarantine packages, cold storage, manifests, and reports are ignored by Git
+- Cold-storage packages are verifiable, but the restore-to-Codex button stays disabled until a full closed-app restore has passed on the real machine
 
 See the [security policy](SECURITY.en.md) for the full threat model.
 
@@ -186,4 +188,4 @@ Read the [contributing guide](CONTRIBUTING.en.md) before making changes.
 
 ## Project status
 
-This is a private personal repository. It is not an OpenAI or official Codex product and does not provide cloud session synchronization. macOS is the primary platform for the complete execution flow; Linux is validated for scanning, dashboard, reports, and CI.
+This is a private personal repository. It is not an OpenAI or official Codex product and does not provide cloud session synchronization. macOS is the primary platform for the complete execution flow; Linux is validated for scanning, dashboard, reports, and CI. Do not use the not-yet-validated cold restore path as the only copy of an important session.

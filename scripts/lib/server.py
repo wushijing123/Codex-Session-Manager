@@ -153,14 +153,13 @@ class DashboardState:
                 else "codex_cli_unavailable"
             )
             raise ValueError(code) from error
-        if result.returncode != 0:
-            raise ValueError("official_unarchive_failed")
-
         catalog = self.refresh()
         refreshed = self.record_for(session_id)
-        if not refreshed or refreshed.get("actual_state") == "archived":
-            raise ValueError("official_unarchive_not_verified")
-        return catalog
+        if refreshed and refreshed.get("actual_state") != "archived":
+            return catalog
+        if result.returncode != 0:
+            raise ValueError("official_unarchive_failed")
+        raise ValueError("official_unarchive_not_verified")
 
     def session_detail(self, session_id: str, max_messages: int = 24) -> dict[str, Any]:
         max_messages = min(200, max(4, int(max_messages)))
@@ -575,6 +574,50 @@ class DashboardState:
             current[key] = str(value)
         write_json(self.app_dir / "settings.json", current)
         return current
+
+    def select_directory(self) -> dict[str, Any]:
+        osascript = shutil.which("osascript")
+        if sys.platform != "darwin" or not osascript:
+            raise ValueError("directory_picker_unavailable")
+        script = """
+try
+    set selectedFolder to choose folder with prompt "选择冷存档目录"
+    return POSIX path of selectedFolder
+on error number -128
+    return ""
+end try
+"""
+        try:
+            result = subprocess.run(
+                [osascript, "-e", script],
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise ValueError("directory_picker_timeout") from exc
+        if result.returncode != 0:
+            raise ValueError("directory_picker_failed")
+        selected = result.stdout.strip()
+        if not selected:
+            return {"selected": False}
+        try:
+            target = Path(selected).expanduser().resolve(strict=True)
+        except OSError as exc:
+            raise ValueError("directory_picker_invalid_selection") from exc
+        if not target.is_dir():
+            raise ValueError("directory_picker_invalid_selection")
+        filesystem_root = Path(target.anchor).resolve()
+        home = Path.home().resolve()
+        codex_home = self.codex_home.resolve()
+        if (
+            target in {filesystem_root, home, codex_home}
+            or codex_home in target.parents
+            or target in codex_home.parents
+        ):
+            raise ValueError("unsafe_storage_target")
+        usage = shutil.disk_usage(target)
+        return {"selected": True, "path": str(target), "free_bytes": usage.free}
 
     @property
     def action_script(self) -> Path:
@@ -1163,6 +1206,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         "detail_planning": True,
                         "manifest_prepare": True,
                         "official_unarchive": bool(shutil.which("codex")),
+                        "native_directory_picker": sys.platform == "darwin"
+                        and bool(shutil.which("osascript")),
                         "indexed_restore_to_codex": False,
                         "reason": "真实关闭应用后的恢复闭环尚未通过，因此保持禁用。",
                     },
@@ -1244,6 +1289,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_json(
                     {"ok": True, "settings": settings, "catalog": self.state.refresh()}
                 )
+                return
+            if self.path == "/api/select-directory":
+                self.send_json({"ok": True, **self.state.select_directory()})
                 return
             if self.path == "/api/refresh":
                 self.send_json({"ok": True, "catalog": self.state.refresh()})

@@ -62,10 +62,14 @@ def exact_regular_file(path: Path, allowed_roots: Iterable[Path]) -> Path:
     return resolved
 
 
-def ensure_target_directory(path: Path) -> Path:
+def ensure_target_directory(path: Path, forbidden_root: Path | None = None) -> Path:
     path = path.expanduser().resolve()
     if path == Path(path.anchor) or path in {Path.home().resolve(), (Path.home() / ".codex").resolve()}:
         raise ActionBlocked("broad_target_rejected")
+    if forbidden_root is not None:
+        forbidden = forbidden_root.expanduser().resolve()
+        if path == forbidden or forbidden in path.parents or path in forbidden.parents:
+            raise ActionBlocked("target_overlaps_codex_home")
     path.mkdir(parents=True, exist_ok=True)
     if path.is_symlink() or not path.is_dir():
         raise ActionBlocked("invalid_target_directory")
@@ -316,7 +320,7 @@ def prepare(args: argparse.Namespace) -> Path:
     if args.action == "cold_archive":
         if not args.target:
             raise ActionBlocked("cold_storage_target_required")
-        target_root = ensure_target_directory(args.target)
+        target_root = ensure_target_directory(args.target, codex_home)
         if target_root == codex_home or codex_home in target_root.parents:
             raise ActionBlocked("cold_storage_must_be_outside_codex_home")
     elif args.action == "quarantine":
@@ -452,7 +456,7 @@ def apply_manifest(args: argparse.Namespace) -> None:
     current_database, current_fingerprint = select_database(codex_home)
     if current_database != database or current_fingerprint != manifest["database_schema_fingerprint"]:
         raise ActionBlocked("database_or_schema_changed")
-    target_root = ensure_target_directory(Path(manifest["target_root"]))
+    target_root = ensure_target_directory(Path(manifest["target_root"]), codex_home)
     app_dir = args.app_dir.expanduser().resolve()
     backup_path = app_dir / "backups" / f"{manifest['manifest_id']}.sqlite"
     sqlite_backup(database, backup_path)

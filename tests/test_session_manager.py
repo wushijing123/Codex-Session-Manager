@@ -729,6 +729,44 @@ class SessionManagerTest(unittest.TestCase):
         self.assertFalse(run.call_args.kwargs["check"])
         self.assertEqual(str(self.codex), run.call_args.kwargs["env"]["CODEX_HOME"])
 
+    def test_official_unarchive_trusts_verified_state_after_cli_warning(self) -> None:
+        dashboard = DashboardState(
+            self.codex,
+            self.app,
+            SKILL_DIR / "assets/dashboard",
+            self.pins,
+            False,
+        )
+        active_catalog = deepcopy(dashboard.catalog)
+        active_record = next(
+            item for item in active_catalog["sessions"] if item["id"] == SESSION_ID
+        )
+        active_record["actual_state"] = "active"
+        active_record["archived"] = False
+
+        def refresh() -> dict[str, object]:
+            dashboard.catalog = active_catalog
+            return active_catalog
+
+        completed_with_warning = subprocess.CompletedProcess(
+            [], 1, stdout="", stderr="Error: failed to unarchive session"
+        )
+        with (
+            mock.patch("lib.server.shutil.which", return_value="/usr/local/bin/codex"),
+            mock.patch(
+                "lib.server.subprocess.run", return_value=completed_with_warning
+            ),
+            mock.patch.object(dashboard, "refresh", side_effect=refresh),
+        ):
+            result = dashboard.unarchive_session(SESSION_ID)
+
+        self.assertEqual(
+            "active",
+            next(item for item in result["sessions"] if item["id"] == SESSION_ID)[
+                "actual_state"
+            ],
+        )
+
     def test_official_unarchive_rejects_non_archived_session(self) -> None:
         dashboard = DashboardState(
             self.codex,
@@ -953,6 +991,21 @@ class SessionManagerTest(unittest.TestCase):
             conn.execute("SELECT COUNT(*) FROM threads WHERE id=?", (SESSION_ID,)).fetchone()[0],
         )
         conn.close()
+
+    def test_cold_storage_target_cannot_overlap_codex_home(self) -> None:
+        with self.assertRaisesRegex(
+            session_actions.ActionBlocked, "target_overlaps_codex_home"
+        ):
+            session_actions.ensure_target_directory(self.codex / "cold", self.codex)
+        with self.assertRaisesRegex(
+            session_actions.ActionBlocked, "target_overlaps_codex_home"
+        ):
+            session_actions.ensure_target_directory(self.root, self.codex)
+
+        safe = self.root / "external-volume"
+        self.assertEqual(
+            safe.resolve(), session_actions.ensure_target_directory(safe, self.codex)
+        )
 
     def test_cold_archive_and_full_restore_round_trip(self) -> None:
         cold = self.root / "cold"
@@ -1289,6 +1342,53 @@ class SessionManagerTest(unittest.TestCase):
         self.assertEqual(helper, result["helper"])
         self.assertTrue(result["manual_exit_required"])
         self.assertEqual([], result["requested_apps"])
+
+    def test_macos_directory_picker_returns_selected_folder_and_free_space(self) -> None:
+        dashboard = object.__new__(DashboardState)
+        dashboard.codex_home = self.codex
+        target = self.root / "external-volume" / "Codex冷存档"
+        target.mkdir(parents=True)
+        with (
+            mock.patch("lib.server.sys.platform", "darwin"),
+            mock.patch("lib.server.shutil.which", return_value="/usr/bin/osascript"),
+            mock.patch(
+                "lib.server.subprocess.run",
+                return_value=SimpleNamespace(returncode=0, stdout=f"{target}\n"),
+            ) as run,
+        ):
+            result = dashboard.select_directory()
+
+        self.assertTrue(result["selected"])
+        self.assertEqual(str(target.resolve()), result["path"])
+        self.assertGreater(result["free_bytes"], 0)
+        self.assertEqual("/usr/bin/osascript", run.call_args.args[0][0])
+
+    def test_macos_directory_picker_cancel_keeps_current_value(self) -> None:
+        dashboard = object.__new__(DashboardState)
+        dashboard.codex_home = self.codex
+        with (
+            mock.patch("lib.server.sys.platform", "darwin"),
+            mock.patch("lib.server.shutil.which", return_value="/usr/bin/osascript"),
+            mock.patch(
+                "lib.server.subprocess.run",
+                return_value=SimpleNamespace(returncode=0, stdout=""),
+            ),
+        ):
+            self.assertEqual({"selected": False}, dashboard.select_directory())
+
+    def test_macos_directory_picker_rejects_codex_data_directory(self) -> None:
+        dashboard = object.__new__(DashboardState)
+        dashboard.codex_home = self.codex
+        with (
+            mock.patch("lib.server.sys.platform", "darwin"),
+            mock.patch("lib.server.shutil.which", return_value="/usr/bin/osascript"),
+            mock.patch(
+                "lib.server.subprocess.run",
+                return_value=SimpleNamespace(returncode=0, stdout=f"{self.codex}\n"),
+            ),
+        ):
+            with self.assertRaisesRegex(ValueError, "unsafe_storage_target"):
+                dashboard.select_directory()
 
     def test_dashboard_english_catalog_covers_static_and_dynamic_text(self) -> None:
         html = (SKILL_DIR / "assets/dashboard/index.html").read_text(encoding="utf-8")

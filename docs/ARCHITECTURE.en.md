@@ -43,7 +43,7 @@ flowchart TB
 - Uses a one-time launch token for initial authorization
 - Requires a CSRF token for every POST request
 - Manages settings, plans, receipts, and manifests
-- Uses only the official Codex CLI for regular unarchive, then verifies with a new scan
+- Uses only the official Codex CLI for regular unarchive, then treats the rescanned state as the final result
 - Never bypasses the action script to mutate real data
 
 ### `scripts/session_actions.py`

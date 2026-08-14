@@ -38,7 +38,7 @@ flowchart TD
 
 ### 4. 执行计划
 
-冷存档、隔离和永久删除只改变 `planned_action`，不会立即移动或删除文件。普通已归档会话详情中的“取消归档”是例外：它调用 Codex 官方 `codex unarchive SESSION_ID`，成功后立即重新扫描，不直接修改 SQLite。旧版 `archive` / `unarchive` 计划标记仍折叠为历史信息。
+冷存档、隔离和永久删除只改变 `planned_action`，不会立即移动或删除文件。普通已归档会话详情中的“取消归档”是例外：它调用 Codex 官方 `codex unarchive SESSION_ID`，命令结束后立即重新扫描，不直接修改 SQLite。旧版 `archive` / `unarchive` 计划标记仍折叠为历史信息。
 
 ### 5. 确认与执行
 
@@ -48,7 +48,7 @@ flowchart TD
 
 ### 取消普通归档
 
-普通已归档会话在详情中提供“取消归档”。按钮只传递扫描结果中的精确 Session ID，调用 Codex 官方 CLI，并在成功后重新扫描验证。状态冲突、未索引、冷存档和隔离会话不能走这条路径。
+普通已归档会话在详情中提供“取消归档”。按钮只传递扫描结果中的精确 Session ID，调用 Codex 官方 CLI，并在命令结束后重新扫描验证。重新扫描后的真实状态优先于 CLI 退出码：状态已经返回就显示成功，仍为归档才显示失败。状态冲突、未索引、冷存档和隔离会话不能走这条路径。
 
 ### 永久保护
 
@@ -116,8 +116,9 @@ python3 scripts/session_manager.py report --lang en --output-dir /absolute/repor
 5. 创建并推送与 VERSION 一致的标签
 
 ```bash
-git tag -a v0.3.0 -m "Release v0.3.0"
-git push origin v0.3.0
+release_version=$(cat VERSION)
+git tag -a "v${release_version}" -m "Release v${release_version}"
+git push origin "v${release_version}"
 ```
 
 Release 工作流会重新验证、构建运行时 ZIP，并创建或更新 GitHub Release。
