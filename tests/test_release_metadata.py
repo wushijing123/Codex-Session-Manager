@@ -31,6 +31,8 @@ class ReleaseMetadataTests(unittest.TestCase):
             "SECURITY.en.md",
             "docs/INSTALLATION.md",
             "docs/INSTALLATION.en.md",
+            "docs/FAQ.md",
+            "docs/FAQ.en.md",
         ):
             self.assertIn(f"{prefix}{relative}", names)
         self.assertFalse(any(name.startswith(f"{prefix}tests/") for name in names))

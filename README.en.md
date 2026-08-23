@@ -11,6 +11,8 @@ A local-first, safety-layered, visual lifecycle manager for Codex sessions. It h
 
 Core promise: find and safely move Codex sessions locally, keep a verifiable restore path, and never upload chat data.
 
+[Five-minute demo](#five-minute-demo) · [Installation](#five-minute-installation) · [FAQ](docs/FAQ.en.md) · [Verification evidence](docs/VERIFICATION.en.md) · [Safety boundary](#safety-boundary)
+
 ![Home dashboard running on fully fictional data](assets/demo/dashboard-home.jpg)
 
 ## Why this project exists
@@ -209,6 +211,7 @@ Read the [contributing guide](CONTRIBUTING.en.md) before making changes.
 - [Installation](docs/INSTALLATION.en.md)
 - [User and release workflows](docs/WORKFLOWS.en.md)
 - [Architecture and data flow](docs/ARCHITECTURE.en.md)
+- [FAQ](docs/FAQ.en.md)
 - [Security policy](SECURITY.en.md)
 - [Contributing](CONTRIBUTING.en.md)
 - [Changelog](CHANGELOG.md)
@@ -223,4 +226,4 @@ Read the [contributing guide](CONTRIBUTING.en.md) before making changes.
 
 ## Project status
 
-This is a community-usable, local-first Skill. It is not an OpenAI or official Codex product and does not provide cloud session synchronization. macOS is the primary platform for the complete execution flow; Linux is validated for scanning, dashboard, reports, and CI. Do not use the not-yet-validated cold restore path as the only copy of an important session.
+This is a community-usable, local-first Skill. It is not an OpenAI or official Codex product and does not provide cloud session synchronization. macOS has passed a real cold storage → quit Codex → restore loop: session ID, title, conversation-log hash, archived index state, and original timestamps remained unchanged. Linux is validated for scanning, dashboard, reports, and CI. Keep an independent backup for important sessions; the real-machine permanent-deletion flow is still unverified.

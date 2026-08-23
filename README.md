@@ -11,6 +11,8 @@
 
 核心承诺：在本地找到并安全迁移 Codex 会话，保留可校验恢复路径，不上传任何聊天数据。
 
+[五分钟演示](#五分钟演示) · [五分钟安装](#五分钟安装) · [常见问题](docs/FAQ.md) · [验证证据](docs/VERIFICATION.md) · [安全边界](#安全边界)
+
 ![使用完全虚构数据运行的首页](assets/demo/dashboard-home.jpg)
 
 ## 为什么做这个项目
@@ -221,6 +223,7 @@ CI 会在 macOS、Linux 与 Python 3.11/3.13 上验证项目，并生成可下�
 - [安装指南](docs/INSTALLATION.md)
 - [用户与发布工作流](docs/WORKFLOWS.md)
 - [架构与数据流](docs/ARCHITECTURE.md)
+- [常见问题](docs/FAQ.md)
 - [安全策略](SECURITY.md)
 - [贡献指南](CONTRIBUTING.md)
 - [版本记录](CHANGELOG.md)
@@ -235,4 +238,4 @@ CI 会在 macOS、Linux 与 Python 3.11/3.13 上验证项目，并生成可下�
 
 ## 项目状态
 
-本项目是社区可用的本地优先 Skill，不代表 OpenAI 或官方 Codex 产品，也不提供云端会话同步。macOS 是完整执行链路的主要验证平台；Linux 用于扫描、看板、报告与 CI 验证。当前不要把未完成实机恢复验证的冷存档用于唯一一份重要会话。
+本项目是社区可用的本地优先 Skill，不代表 OpenAI 或官方 Codex 产品，也不提供云端会话同步。macOS 已完成真实“冷存档 → 退出 Codex → 恢复”闭环验证：Session ID、标题、聊天日志哈希、归档索引和原始时间字段保持一致。Linux 用于扫描、看板、报告与 CI 验证；重要会话仍应保留独立备份，永久删除的实机全流程尚未验证。

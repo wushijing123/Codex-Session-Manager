@@ -16,12 +16,23 @@ This file records the checks used to validate the public-release documentation a
 | `node --check assets/dashboard/i18n.js` | Pass | Syntax check passed |
 | `node --check assets/dashboard/app.js` | Pass | Syntax check passed |
 | `python3 scripts/package_release.py --output-dir dist` | Pass | Produced `dist/codex-session-lifecycle-manager-v0.6.0.zip` |
+| Real macOS cold-restore loop | Pass | Started with `--verify-closed-loop` while Codex was running, then restored the original JSONL and database index after exit; file SHA-256, session ID, title, archive state, and creation/update timestamps remained unchanged |
 
 A real restore verification must start while Codex is still running and explicitly use `--verify-closed-loop`. The local capability marker is written only after the helper observes the running → fully closed → restored transition and verifies both content and index recovery. Manually creating the marker is not a verification.
 
+### Real restore evidence (2026-08-23)
+
+- Used a purpose-built synthetic test session with no real business content
+- Verified the package digest, compressed-file digest, and decompressed source digest
+- Restored JSONL byte count and SHA-256 exactly matched the pre-archive source
+- Restored database row kept `archived=1` and the original `created_at`, `updated_at`, `archived_at`, and millisecond fields
+- Reparsed both the user message and final Codex reply from the restored JSONL
+- Removed the cold package only after a successful commit and verified the restore audit digest
+- Wrote the local capability marker with mode `0600` only after observing running → fully closed → restored
+- A fresh dashboard scan recognized the session as a regular archive and enabled local restore capability
+
 ## Not yet verified
 
-- Closed-loop restore to Codex on a real machine
 - End-to-end permanent deletion on a real machine
 - Windows execution path
 

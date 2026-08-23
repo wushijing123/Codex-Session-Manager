@@ -9,6 +9,7 @@ This roadmap describes the public release direction only. It does not turn unver
 - Plan / receipt / manifest separation
 - Official unarchive
 - Cold storage, 14-day quarantine, restore-side validation and commands
+- Real macOS closed-app cold restore loop
 - Installer, Doctor, packaging, and regression tests
 
 ## Near term
@@ -20,7 +21,7 @@ This roadmap describes the public release direction only. It does not turn unver
 
 ## Next phase
 
-- Finish the closed-loop restore validation on a real machine and tighten the restore UI experience
+- Build a restore regression matrix across Codex versions
 - Keep public documentation and verification notes aligned
 - Add more community-facing examples and troubleshooting notes
 

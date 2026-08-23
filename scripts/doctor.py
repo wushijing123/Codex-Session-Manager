@@ -47,6 +47,8 @@ REQUIRED = (
     "docs/WORKFLOWS.en.md",
     "docs/ARCHITECTURE.md",
     "docs/ARCHITECTURE.en.md",
+    "docs/FAQ.md",
+    "docs/FAQ.en.md",
     "docs/VERIFICATION.md",
     "docs/VERIFICATION.en.md",
     ".github/workflows/ci.yml",
