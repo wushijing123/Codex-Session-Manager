@@ -9,8 +9,21 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SKILL_NAME = "wushijing-codex-session-manager"
-INCLUDE = ("SKILL.md", "VERSION", "agents", "assets", "references", "scripts")
+SKILL_NAME = "codex-session-lifecycle-manager"
+INCLUDE = (
+    "SKILL.md",
+    "VERSION",
+    "LICENSE",
+    "README.md",
+    "README.en.md",
+    "SECURITY.md",
+    "SECURITY.en.md",
+    "agents",
+    "assets",
+    "docs",
+    "references",
+    "scripts",
+)
 EXCLUDED_NAMES = {"__pycache__", ".DS_Store"}
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -12,7 +13,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from urllib.parse import unquote
 
-SKILL_NAME = "wushijing-codex-session-manager"
+SKILL_NAME = "codex-session-lifecycle-manager"
+LEGACY_SKILL_NAMES = ("wushijing-codex-session-manager",)
 ROOT = Path(__file__).resolve().parents[1]
 REQUIRED = (
     "SKILL.md",
@@ -20,8 +22,13 @@ REQUIRED = (
     "README.md",
     "README.en.md",
     "CHANGELOG.md",
+    "LICENSE",
+    "CODE_OF_CONDUCT.md",
+    "CODE_OF_CONDUCT.en.md",
     "CONTRIBUTING.md",
     "CONTRIBUTING.en.md",
+    "ROADMAP.md",
+    "ROADMAP.en.md",
     "SECURITY.md",
     "SECURITY.en.md",
     "agents/openai.yaml",
@@ -37,6 +44,8 @@ REQUIRED = (
     "docs/WORKFLOWS.en.md",
     "docs/ARCHITECTURE.md",
     "docs/ARCHITECTURE.en.md",
+    "docs/VERIFICATION.md",
+    "docs/VERIFICATION.en.md",
     ".github/workflows/ci.yml",
     ".github/workflows/release.yml",
 )
@@ -125,7 +134,19 @@ def installation_checks(home: Path) -> list[Check]:
     checks: list[Check] = []
     canonical = home / ".agents" / "skills" / SKILL_NAME
     add(checks, ROOT.resolve() == canonical.resolve(), "canonical-source", str(canonical))
-    for directory in ENTRY_DIRS:
+    legacy_root = home / ".agents" / "skills"
+    for legacy_name in LEGACY_SKILL_NAMES:
+        legacy = legacy_root / legacy_name
+        if os.path.lexists(legacy):
+            checks.append(
+                Check(
+                    "warn",
+                    "legacy-source",
+                    f"{legacy}; run scripts/install_skill.py --migrate-legacy from that directory",
+                )
+            )
+
+    for index, directory in enumerate(ENTRY_DIRS):
         target = home / directory / SKILL_NAME
         valid = False
         if target.is_symlink():
@@ -133,7 +154,37 @@ def installation_checks(home: Path) -> list[Check]:
                 valid = target.resolve(strict=True) == ROOT.resolve()
             except FileNotFoundError:
                 valid = False
-        add(checks, valid, f"entry:{directory.split('/')[0]}", str(target))
+        required = index == 0
+        if valid:
+            checks.append(Check("pass", f"entry:{directory.split('/')[0]}", str(target)))
+        elif not os.path.lexists(target) and not required:
+            checks.append(
+                Check(
+                    "pass",
+                    f"entry:{directory.split('/')[0]}",
+                    f"optional entry not installed: {target}",
+                )
+            )
+        else:
+            checks.append(
+                Check(
+                    "fail" if required else "warn",
+                    f"entry:{directory.split('/')[0]}",
+                    str(target),
+                )
+            )
+
+        entry_root = home / directory
+        for legacy_name in LEGACY_SKILL_NAMES:
+            legacy_target = entry_root / legacy_name
+            if os.path.lexists(legacy_target):
+                checks.append(
+                    Check(
+                        "warn",
+                        f"legacy-entry:{directory.split('/')[0]}",
+                        str(legacy_target),
+                    )
+                )
     return checks
 
 

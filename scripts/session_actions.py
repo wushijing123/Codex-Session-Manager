@@ -132,7 +132,7 @@ def codex_processes(codex_home: Path) -> list[str]:
             [
                 "pgrep",
                 "-fal",
-                r"/Applications/(Codex|ChatGPT)\.app/|codex app-server",
+                r"/Applications/(Codex|ChatGPT)\.app/Contents/MacOS/(Codex|ChatGPT)( |$)",
             ],
             capture_output=True,
             text=True,
@@ -200,6 +200,7 @@ def sqlite_backup(source: Path, target: Path) -> None:
     finally:
         target_conn.close()
         source_conn.close()
+    os.chmod(target, 0o600)
     fsync_file(target)
 
 
@@ -207,8 +208,8 @@ def immutable_write(path: Path, payload: dict[str, Any]) -> None:
     write_json(path, payload)
     digest_path = path.with_suffix(path.suffix + ".sha256")
     digest_path.write_text(f"{sha256_file(path)}  {path.name}\n", encoding="utf-8")
-    os.chmod(path, 0o444)
-    os.chmod(digest_path, 0o444)
+    os.chmod(path, 0o600)
+    os.chmod(digest_path, 0o600)
 
 
 def verify_immutable(path: Path) -> None:
@@ -354,7 +355,8 @@ def prepare(args: argparse.Namespace) -> Path:
     manifest_path = app_dir / "manifests" / f"{manifest_id}.json"
     immutable_write(manifest_path, manifest)
     print(f"manifest: {manifest_path}")
-    print(f"confirm: {confirmation}")
+    if args.show_confirmation:
+        print(f"confirm: {confirmation}")
     return manifest_path
 
 
@@ -370,6 +372,7 @@ def package_item(
         raise ActionBlocked(f"source_hash_changed:{item['session_id']}")
     copied = package_dir / "session.jsonl"
     shutil.copyfile(source, copied)
+    os.chmod(copied, 0o600)
     fsync_file(copied)
     if sha256_file(copied) != item["source_sha256"]:
         raise ActionBlocked(f"copy_hash_mismatch:{item['session_id']}")
@@ -382,6 +385,7 @@ def package_item(
         compressed = package_dir / "session.jsonl.zst"
         subprocess.run([zstd, "-q", "-T0", "-f", str(copied), "-o", str(compressed)], check=True)
         subprocess.run([zstd, "-q", "-t", str(compressed)], check=True)
+        os.chmod(compressed, 0o600)
         compressed_hash = sha256_file(compressed)
         os.unlink(copied)
         output = compressed
@@ -422,6 +426,61 @@ def append_audit(app_dir: Path, event: dict[str, Any]) -> Path:
     path = audit_dir / f"{int(time.time())}-{uuid.uuid4().hex[:8]}.json"
     immutable_write(path, event)
     return path
+
+
+def clear_completed_session_plans(
+    app_dir: Path,
+    session_ids: list[str],
+    *,
+    expected_actions: set[str] | None = None,
+) -> None:
+    """Remove only the stale plan entries that match the completed action."""
+    normalized = {str(session_id).lower() for session_id in session_ids}
+    if not normalized:
+        return
+
+    plans_payload = read_json(app_dir / "plans.json", {"plans": {}})
+    plans = plans_payload.get("plans")
+    removed: set[str] = set()
+    plans_changed = False
+    if isinstance(plans, dict):
+        for session_id in normalized:
+            action = plans.get(session_id)
+            if action is None:
+                continue
+            if expected_actions is not None and action not in expected_actions:
+                continue
+            if session_id in plans:
+                plans.pop(session_id, None)
+                removed.add(session_id)
+                plans_changed = True
+        if plans_changed:
+            plans_payload["plans"] = plans
+            write_json(app_dir / "plans.json", plans_payload)
+
+    auto_payload = read_json(app_dir / "auto-plans.json", {"plans": {}})
+    auto_plans = auto_payload.get("plans")
+    auto_changed = False
+    if isinstance(auto_plans, dict):
+        for session_id in removed:
+            if session_id in auto_plans:
+                auto_plans.pop(session_id, None)
+                auto_changed = True
+        if auto_changed:
+            auto_payload["plans"] = auto_plans
+            write_json(app_dir / "auto-plans.json", auto_payload)
+
+
+def mark_restore_verified(app_dir: Path) -> None:
+    write_json(
+        app_dir / "restore-verified.json",
+        {
+            "version": 1,
+            "verified": True,
+            "verified_at": utc_now(),
+            "mechanism": "closed_app_restore",
+        },
+    )
 
 
 def remove_package_files(package: dict[str, Any]) -> None:
@@ -481,7 +540,7 @@ def apply_manifest(args: argparse.Namespace) -> None:
             package_dir = target_root / f"{item['session_id']}-{manifest['manifest_id']}"
             if package_dir.exists():
                 raise ActionBlocked(f"package_already_exists:{package_dir}")
-            package_dir.mkdir()
+            package_dir.mkdir(mode=0o700)
             _, metadata = package_item(item, package_dir, compression, effective_manifest)
             packages.append(
                 {
@@ -544,6 +603,34 @@ def apply_manifest(args: argparse.Namespace) -> None:
             audit_path = append_audit(app_dir, event)
         else:
             os.unlink(backup_path)
+        completed_ids = [item["session_id"] for item in manifest["items"]]
+        expected_actions = {
+            "cold_archive": {"cold_archive"},
+            "quarantine": {"quarantine"},
+            "permanent_delete": {"permanent_delete", "purge_after_quarantine"},
+        }.get(str(manifest.get("action") or ""), set())
+        try:
+            clear_completed_session_plans(
+                app_dir, completed_ids, expected_actions=expected_actions
+            )
+        except OSError as plan_error:
+            # The indexed action is already committed at this point. A local plan-file
+            # cleanup failure must not misreport the session move/delete as failed.
+            event["plan_cleanup_pending"] = True
+            event["plan_cleanup_error"] = type(plan_error).__name__
+            try:
+                append_audit(
+                    app_dir,
+                    {
+                        "event": "plan_cleanup_pending",
+                        "completed_at": utc_now(),
+                        "manifest_id": manifest["manifest_id"],
+                        "session_ids": completed_ids,
+                        "content_retained": not permanent_delete,
+                    },
+                )
+            except OSError:
+                pass
         print(json.dumps(event, ensure_ascii=False, indent=2))
     except Exception as exc:
         if permanent_sources_removed:
@@ -696,6 +783,16 @@ def restore_package(args: argparse.Namespace) -> None:
                 "content_retained": True,
             },
         )
+        app_dir = args.app_dir.expanduser().resolve()
+        try:
+            clear_completed_session_plans(app_dir, [metadata["session_id"]])
+        except OSError:
+            pass
+        if not args.fixture_mode:
+            try:
+                mark_restore_verified(app_dir)
+            except OSError:
+                pass
         print(target)
     finally:
         if temp.exists():
@@ -775,6 +872,10 @@ def purge_package(args: argparse.Namespace) -> None:
             "content_retained": False,
         },
     )
+    try:
+        clear_completed_session_plans(app_dir, [metadata["session_id"]])
+    except OSError:
+        pass
     print(f"purged:{metadata['session_id']}")
 
 
@@ -789,6 +890,7 @@ def build_parser() -> argparse.ArgumentParser:
     prepare_parser.add_argument("--codex-home", type=Path, default=Path.home() / ".codex")
     prepare_parser.add_argument("--pinned-file", type=Path, required=True)
     prepare_parser.add_argument("--target", type=Path)
+    prepare_parser.add_argument("--show-confirmation", action="store_true")
 
     apply_parser = sub.add_parser("apply")
     apply_parser.add_argument("--manifest", type=Path, required=True)

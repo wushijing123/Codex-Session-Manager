@@ -34,17 +34,28 @@
     confirmationSheet: null,
     manifests: [],
     purgeRequests: [],
-    confirmDialog: null,
     contentSearch: null,
     explorerVisibleLimit: 50,
     auto: {preview: null, selected: new Set(), visibleLimit: 25}
   };
 
+  function applyExecutionState(executionState) {
+    if (!executionState) {
+      state.confirmationSheet = null;
+      state.manifests = [];
+      state.purgeRequests = [];
+      return;
+    }
+    state.confirmationSheet = executionState.confirmation_sheet || null;
+    state.manifests = executionState.manifests || [];
+    state.purgeRequests = executionState.purge_requests || [];
+  }
+
   const labels = {
     active: "使用中", archived: "已归档", cold: "冷存档", quarantine: "14 天隔离", unindexed: "未索引", missing: "文件缺失",
     protected: "必须保留", high_value: "建议保留", cold_archive: "建议冷存档", review_required: "需要确认",
     delete_candidate: "建议先隔离", permanent_delete_candidate: "可手动删除", unknown: "未知",
-    cold_archive_action: "冷存档", keep: "保留", archive: "旧版归档标记", unarchive: "旧版取消归档标记", restore: "恢复", protect: "永久保护",
+    cold_archive_action: "冷存档", keep: "保留", archive: "旧版归档标记", unarchive: "旧版取消归档标记", restore: "恢复到 Codex", protect: "锁定此会话，不参与整理",
     permanent_delete: "永久删除", purge_after_quarantine: "隔离到期后删除", current_session: "当前正在使用", pinned: "已置顶",
     permanent_protection: "永久保护", state_conflict_or_missing: "状态冲突或文件缺失", has_parent_or_child: "存在父子依赖",
     group_action_required: "需整组处理", unindexed_log: "未索引日志", automation: "自动化任务", verified_write_work: "检测到实际写入",
@@ -52,7 +63,7 @@
     inactive_with_value_signal: "长期闲置，但有价值信号", inactive_without_unique_value: "长期闲置，未发现独有价值",
     old_short_temporary: "旧的短临时对话", old_large_session: "旧的大体积会话", insufficient_evidence: "证据不足",
     pin_snapshot_unavailable_or_stale: "置顶状态执行前待刷新", hard_protected: "真正锁定", not_plain_archive: "不是普通归档",
-    manual_plan_conflict: "与人工计划冲突", planning_gate_closed: "数据库识别未通过", fresh_pin_snapshot_required: "执行前必须刷新置顶状态",
+    manual_plan_conflict: "与人工计划冲突", planning_gate_closed: "数据库识别未通过", fresh_pin_snapshot_required: "置顶状态需要通过 Skill 同步；“刷新会话”只重新扫描本机会话。",
     codex_one_off_review: "Codex 判断为一次性对话", recent_one_off_review: "近期一次性对话", codex_value_review: "Codex 判断有复用价值",
     codex_review_uncertain: "Codex 判断仍需复核", inactive_60d_permanent_delete_candidate: "超过 60 天且符合低风险条件",
     incinerator_requires_archive_or_quarantine: "只接受隔离中的会话", incinerator_requires_plain_archive: "永久删除只接受普通归档会话",
@@ -63,6 +74,16 @@
     directory_picker_unavailable: "当前系统不支持目录选择器", directory_picker_timeout: "目录选择超时，请重试",
     directory_picker_failed: "无法打开目录选择器", directory_picker_invalid_selection: "选择的目录不可用",
     unsafe_storage_target: "该目录不能作为冷存档位置",
+    ready: "待执行", running: "执行中", completed: "已完成", failed: "执行失败", stopped: "执行中断",
+    helper_running: "执行助手仍在运行", helper_stopped_without_completion: "执行助手已停止，请检查日志",
+    cold_archive_applied: "冷存档已完成", quarantine_applied: "隔离已完成", permanent_delete_applied: "永久删除已完成",
+    restore_applied: "恢复已完成", purge_applied: "隔离包已永久删除", manifest_ready: "执行单有效",
+    restore_not_verified: "当前机器还没有通过真实恢复闭环验证，恢复按钮保持禁用",
+    restore_requires_cold_or_quarantine: "只有冷存档或 14 天隔离的会话才能恢复",
+    restore_package_missing: "没有找到可恢复的数据包",
+    restore_package_not_unique: "找到多个同名恢复包，请先人工核对",
+    same_volume_no_system_disk_reclaim: "目标目录和 Codex 在同一磁盘，只能整理，不会释放这块磁盘的空间",
+    cross_volume: "目标目录位于另一块磁盘，可释放当前 Codex 磁盘空间",
     no_destructive_plans: "没有可执行计划", unarchive_requires_plain_archive: "只有普通归档会话才能取消归档",
     codex_cli_unavailable: "未找到支持取消归档的 Codex CLI", official_unarchive_failed: "Codex 官方取消归档失败",
     official_unarchive_timeout: "Codex 官方取消归档超时", official_unarchive_not_verified: "取消归档后未通过重新扫描验证"
@@ -121,7 +142,6 @@
   function toggleLanguage() {
     i18n.setLocale(i18n.locale() === "en" ? "zh-CN" : "en");
     closeDrawer();
-    closeFinalConfirm();
     translateStatic();
     if (state.catalog) renderAll();
   }
@@ -547,9 +567,28 @@
       unarchive.addEventListener("click", () => unarchiveSession(session, unarchive));
       actions.append(unarchive);
     }
-    const protect = el("button", "secondary", session.permanent_protection ? t("解除永久保护") : t("永久保护"));
+    const protect = el("button", "secondary", session.permanent_protection ? t("解除锁定") : t("锁定此会话，不参与整理"));
     protect.addEventListener("click", () => toggleProtect(session.id, !session.permanent_protection));
     actions.append(protect);
+    if (["cold", "quarantine"].includes(session.actual_state)) {
+      const restore = el("button", "secondary", t("退出 Codex 并恢复"));
+      restore.disabled = !state.capabilities.indexed_restore_to_codex;
+      if (restore.disabled) restore.title = state.capabilities.reason || t("当前机器还没有通过真实恢复闭环验证，恢复按钮保持禁用");
+      restore.addEventListener("click", () => launchRestore(session.id));
+      actions.append(restore);
+    }
+    if (session.actual_state === "quarantine" && session.purge_eligible) {
+      const purge = el("button", "danger-button", t("永久删除"));
+      purge.addEventListener("click", () => openFinalConfirm({
+        title: t("确认永久删除隔离包？"),
+        body: t("只保留脱敏审计记录。"),
+        warning: t("删除后无法恢复。"),
+        confirmLabel: t("确认永久删除"),
+        trigger: purge,
+        onConfirm: () => launchPurge({session_id: session.id})
+      }));
+      actions.append(purge);
+    }
     const actionButtonsShown = session.actual_state === "archived" && !planBlocked(session) && !session.relation_count;
     if (actionButtonsShown) {
       actions.append(
@@ -584,7 +623,7 @@
   async function plan(id, action) {
     try {
       const data = await api("/api/plan", {method: "POST", body: JSON.stringify({session_id: id, action})});
-      state.catalog = data.catalog; state.confirmationSheet = null; state.manifests = [];
+      state.catalog = data.catalog; applyExecutionState(data.execution_state);
       renderAll(); closeDrawer(); await loadAutoPreview();
       toast(action ? t("已加入计划：{action}", {action: actionLabel(action)}) : t("已取消计划"));
     } catch (error) { toast(labels[error.message] ? labelFor(error.message) : t("计划失败：{error}", {error: error.message})); }
@@ -593,9 +632,9 @@
   async function toggleProtect(id, enabled) {
     try {
       const data = await api("/api/protect", {method: "POST", body: JSON.stringify({session_id: id, enabled})});
-      state.catalog = data.catalog; state.confirmationSheet = null; state.manifests = [];
+      state.catalog = data.catalog; applyExecutionState(data.execution_state);
       renderAll(); closeDrawer(); await loadAutoPreview();
-      toast(enabled ? t("已永久保护") : t("已解除永久保护"));
+      toast(enabled ? t("已锁定，不会再进入整理建议") : t("已解除锁定"));
     } catch (error) { toast(t("操作失败：{error}", {error: error.message})); }
   }
 
@@ -604,7 +643,7 @@
     button.textContent = t("正在取消归档…");
     try {
       const data = await api("/api/unarchive", {method: "POST", body: JSON.stringify({session_id: session.id})});
-      state.catalog = data.catalog; state.confirmationSheet = null; state.manifests = [];
+      state.catalog = data.catalog; applyExecutionState(data.execution_state);
       renderAll(); closeDrawer(); await loadAutoPreview();
       toast(t("已取消归档，Session 已回到 Codex"));
     } catch (error) {
@@ -663,15 +702,14 @@
     const plans = state.catalog.sessions.filter(session => session.planned_action);
     const currentPlans = plans.filter(session => destructiveActions.has(session.planned_action));
     const legacyPlans = plans.filter(session => !destructiveActions.has(session.planned_action));
-    const actionable = currentPlans.filter(session => !session.execution_blocker &&
-      !(session.planned_action === "purge_after_quarantine" && session.actual_state === "quarantine"));
+    const actionable = currentPlans.filter(session => !session.execution_blocker);
     const appendPlan = (container, session, legacy = false) => {
       const item = el("article", `queue-item${session.execution_blocker ? " blocked" : ""}${legacy ? " legacy" : ""}`);
       const status = legacy ? t("旧版标记，仅记录，不会在这里执行") : session.execution_blocker ? labelFor(session.execution_blocker) :
         ["permanent_delete", "purge_after_quarantine"].includes(session.planned_action) ? permanentDeleteStatus(session) : actionLabel(session.planned_action);
       const title = el("strong", "", compactTitle(session.title || session.id)); title.title = session.title || session.id;
       item.append(title, el("span", "", status), el("span", "", humanBytes(session.size_bytes)));
-      if (session.planned_action === "purge_after_quarantine" && session.actual_state === "quarantine" && session.purge_eligible) {
+      if (session.actual_state === "quarantine" && session.purge_eligible) {
         const purge = el("button", "danger-button", t("永久删除")); purge.addEventListener("click", () => requestPurge(session.id)); item.append(purge);
       }
       const cancel = el("button", "secondary", t("取消计划")); cancel.addEventListener("click", () => plan(session.id, null)); item.append(cancel);
@@ -693,7 +731,7 @@
     $("#plannedBytes").textContent = humanBytes(actionable.reduce((sum, session) => sum + Number(session.size_bytes || 0), 0));
     $("#planCount").textContent = String(currentPlans.length);
     $("#prepareBtn").disabled = !actionable.length;
-    $("#capabilityNotice").textContent = t("计划不会自动执行。确认单会再次检查置顶、父子关系、数据库和 Codex 进程；永久删除始终需要额外确认。");
+    $("#capabilityNotice").textContent = t("计划不会自动执行。确认单只会再核对一次置顶、父子关系、数据库和 Codex 进程；确认后直接生成执行单，不再弹第三层窗口。");
     renderConfirmationSheet(); renderManifests();
   }
 
@@ -705,7 +743,7 @@
     const panel = el("section", "confirmation-panel");
     const head = el("div", "confirmation-head");
     const title = el("div"); title.append(el("p", "eyebrow", "LOCAL OPERATION RECEIPT"), el("h2", "", t("本次操作确认单")));
-    head.append(title, el("span", "state-pill", sheet.confirmed ? t("已确认") : sheet.can_execute ? t("等待二次确认") : t("存在阻塞"))); panel.append(head);
+    head.append(title, el("span", "state-pill", sheet.confirmed ? t("待执行") : sheet.can_execute ? t("待确认") : t("存在阻塞"))); panel.append(head);
     const metrics = el("div", "confirmation-metrics");
     [[t("冷存档"), sheet.counts.cold_archive], [t("14 天隔离"), sheet.counts.quarantine], [t("永久删除"), sheet.counts.permanent_delete], [t("影响空间"), humanBytes(sheet.total_bytes)]]
       .forEach(([label, value]) => { const item = el("div"); item.append(el("span", "", label), el("strong", "", String(value))); metrics.append(item); });
@@ -723,31 +761,56 @@
     if (sheet.blockers.length) {
       const blocked = el("section", "receipt-section blocker-section");
       blocked.append(el("h3", "", t("{count} 个阻塞需要先解决", {count: sheet.blockers.length})));
-      const list = el("ul"); sheet.blockers.forEach(entry => list.append(el("li", "", entry.message || labelFor(entry.code)))); blocked.append(list); panel.append(blocked);
+      const list = el("ul"); sheet.blockers.forEach(entry => list.append(el("li", "", labels[entry.code] ? labelFor(entry.code) : (entry.message || entry.code)))); blocked.append(list); panel.append(blocked);
     }
     const confirm = el("section", "local-confirm");
-    confirm.append(el("p", "", sheet.confirmed ? t("已生成不可变执行单。") : t("下一步只生成执行单，仍不会立刻移动或删除会话。")));
-    const button = el("button", "", sheet.confirmed ? t("已生成执行单") : t("二次确认"));
-    button.disabled = sheet.confirmed || !sheet.can_execute;
-    button.addEventListener("click", () => openFinalConfirm({
-      title: sheet.counts.permanent_delete ? t("确认生成永久删除执行单？") : t("确认生成执行单？"),
-      body: t("本次包含 {count} 条会话。真正执行时仍会等待 Codex 完全退出。", {count: sheet.total_count}),
-      warning: sheet.counts.permanent_delete ? t("{count} 条会话执行后无法恢复。", {count: sheet.counts.permanent_delete}) : "",
-      acknowledgement: sheet.warnings.length ? t("我已逐条检查可能重要的会话，仍确认继续") : "",
-      confirmLabel: t("确认并生成执行单"), trigger: button,
-      onConfirm: acknowledged => confirmOperationSheet(sheet, acknowledged)
-    }));
-    confirm.append(button); panel.append(confirm); host.append(panel);
+    confirm.append(el("p", "", sheet.confirmed ? t("已生成执行单。接下来只需在执行计划里点击启动。") : t("确认后会直接生成执行单，不再弹出额外窗口。")));
+    if (sheet.warnings.length) {
+      const ack = el("label", "acknowledge inline");
+      const checkbox = el("input");
+      checkbox.type = "checkbox";
+      checkbox.id = `receipt-ack-${sheet.sheet_id}`;
+      const text = el("span", "", t("我已逐条检查可能重要的会话，仍确认继续"));
+      ack.append(checkbox, text);
+      confirm.append(ack);
+    }
+    const button = el("button", "", sheet.confirmed ? t("已生成执行单") : t("生成执行单"));
+    const acknowledgeBox = sheet.warnings.length ? null : true;
+    const updateDisabled = () => {
+      const checked = sheet.warnings.length ? Boolean($("#confirmationSheet")?.querySelector(`#receipt-ack-${CSS.escape(sheet.sheet_id)}`)?.checked) : true;
+      button.disabled = sheet.confirmed || !sheet.can_execute || !checked;
+    };
+    updateDisabled();
+    if (sheet.warnings.length) {
+      const checkbox = confirm.querySelector(`#receipt-ack-${CSS.escape(sheet.sheet_id)}`);
+      checkbox.addEventListener("change", updateDisabled);
+    }
+    button.addEventListener("click", () => confirmOperationSheet(sheet, sheet.warnings.length ? Boolean(confirm.querySelector(`#receipt-ack-${CSS.escape(sheet.sheet_id)}`)?.checked) : false));
+    confirm.append(button);
+    panel.append(confirm); host.append(panel);
   }
 
   function renderManifests() {
     const list = $("#manifestList"); list.replaceChildren();
     state.manifests.forEach(manifest => {
       const item = el("article", "manifest-item");
-      item.append(el("strong", "", t("{action} · {count} 条 · {bytes}", {action: actionLabel(manifest.action), count: manifest.session_ids.length, bytes: humanBytes(manifest.bytes)})));
-      const launch = el("button", "", t("退出 Codex 并执行"));
-      launch.addEventListener("click", () => launchAndQuitHelper(manifest, manifest.confirmation_phrase)); item.append(launch);
-      item.append(el("small", "muted", manifest.action === "permanent_delete" ? t("没有恢复期。失败时使用临时副本回滚。") : t("执行助手会等待 Codex 完全退出。")));
+      const actionText = manifest.action === "restore" ? t("恢复到 Codex") : actionLabel(manifest.action);
+      const isDirectManifest = manifest.kind === "manifest";
+      const isRestore = manifest.action === "restore";
+      const isLaunchable = (isDirectManifest || isRestore) && manifest.status === "ready";
+      item.append(el("strong", "", t("{action} · {count} 条 · {bytes}", {action: actionText, count: manifest.session_ids.length, bytes: humanBytes(manifest.bytes)})));
+      item.append(el("span", "", labelFor(manifest.status)));
+      if (manifest.detail) item.append(el("small", "muted", labelFor(manifest.detail)));
+      if (Array.isArray(manifest.volume_notes) && manifest.volume_notes.length) {
+        item.append(el("small", "muted", manifest.volume_notes.map(note => labelFor(note)).join("；")));
+      }
+      if (isDirectManifest || isRestore) {
+        const launch = el("button", "", isRestore ? t("退出 Codex 并恢复") : t("退出 Codex 并执行"));
+        launch.disabled = !isLaunchable;
+        launch.addEventListener("click", () => isRestore ? launchRestore(manifest.session_ids[0]) : launchAndQuitHelper(manifest));
+        item.append(launch);
+      }
+      item.append(el("small", "muted", manifest.action === "permanent_delete" ? t("没有恢复期。失败时使用临时副本回滚。") : manifest.action === "restore" ? t("只有通过真实闭环验证的机器，才会启用恢复按钮。") : manifest.kind === "purge" ? t("删除后只保留脱敏审计记录。") : t("执行助手会等待 Codex 完全退出。")));
       list.append(item);
     });
     state.purgeRequests.forEach(request => {
@@ -770,6 +833,9 @@
   async function launchPurge(request) {
     try {
       const data = await api("/api/launch-purge", {method: "POST", body: JSON.stringify({session_id: request.session_id, second_confirmation: true})});
+      applyExecutionState(data.execution_state);
+      const refreshed = await api("/api/refresh", {method: "POST", body: "{}"});
+      state.catalog = refreshed.catalog; applyExecutionState(refreshed.execution_state); renderAll();
       toast(t("永久删除助手已启动，PID {pid}", {pid: data.helper.pid})); return true;
     } catch (error) { toast(t("永久删除未启动：{error}", {error: labelFor(error.message)})); return false; }
   }
@@ -777,7 +843,7 @@
   async function prepareConfirmationSheet() {
     try {
       const data = await api("/api/confirmation-sheet", {method: "POST", body: "{}"});
-      state.confirmationSheet = data.sheet; state.manifests = []; renderQueue();
+      state.confirmationSheet = data.sheet; applyExecutionState(data.execution_state); renderQueue();
       $("#confirmationSheet").scrollIntoView({behavior: "smooth", block: "start"});
     } catch (error) { toast(t("确认单生成失败：{error}", {error: labelFor(error.message)})); }
   }
@@ -785,18 +851,32 @@
   async function confirmOperationSheet(sheet, warningsAcknowledged) {
     try {
       const data = await api("/api/confirm-sheet", {method: "POST", body: JSON.stringify({sheet_id: sheet.sheet_id, warnings_acknowledged: warningsAcknowledged, second_confirmation: true})});
-      sheet.confirmed = true; state.manifests = data.manifests; renderQueue();
+      sheet.confirmed = true; state.manifests = data.manifests; applyExecutionState(data.execution_state); renderQueue();
       $("#manifestList").scrollIntoView({behavior: "smooth", block: "start"});
       toast(t("已生成 {count} 个执行单", {count: state.manifests.length})); return true;
     } catch (error) { toast(t("二次确认未通过：{error}", {error: labelFor(error.message)})); return false; }
   }
 
-  async function launchAndQuitHelper(manifest, confirmation) {
+  async function launchAndQuitHelper(manifest) {
     try {
-      const data = await api("/api/launch-and-quit", {method: "POST", body: JSON.stringify({manifest: manifest.path, confirmation})});
+      const data = await api("/api/launch-and-quit", {method: "POST", body: JSON.stringify({manifest: manifest.path})});
+      applyExecutionState(data.execution_state);
+      const refreshed = await api("/api/refresh", {method: "POST", body: "{}"});
+      state.catalog = refreshed.catalog; applyExecutionState(refreshed.execution_state); renderAll();
       if (data.manual_exit_required) toast(t("执行助手已启动（PID {pid}），请手动完全退出 Codex", {pid: data.helper.pid}));
       else toast(t("执行助手已启动（PID {pid}），正在退出 Codex", {pid: data.helper.pid}));
     } catch (error) { toast(t("执行助手未启动：{error}", {error: labelFor(error.message)})); }
+  }
+
+  async function launchRestore(sessionId) {
+    try {
+      const data = await api("/api/launch-restore", {method: "POST", body: JSON.stringify({session_id: sessionId})});
+      applyExecutionState(data.execution_state);
+      const refreshed = await api("/api/refresh", {method: "POST", body: "{}"});
+      state.catalog = refreshed.catalog; applyExecutionState(refreshed.execution_state); renderAll();
+      if (data.manual_exit_required) toast(t("恢复助手已启动（PID {pid}），请手动完全退出 Codex", {pid: data.helper.pid}));
+      else toast(t("恢复助手已启动（PID {pid}），正在退出 Codex", {pid: data.helper.pid}));
+    } catch (error) { toast(t("恢复未启动：{error}", {error: labelFor(error.message)})); }
   }
 
   function renderReviewMetrics() {
@@ -810,7 +890,7 @@
     const button = $("#prepareReviewBtn"); button.disabled = true; button.textContent = t("正在扫描…");
     try {
       const data = await api("/api/review-bundle", {method: "POST", body: JSON.stringify({max_turns: Number($("#reviewMaxTurns").value)})});
-      state.catalog = data.catalog; renderAll();
+      state.catalog = data.catalog; applyExecutionState(data.execution_state); renderAll();
       const notice = $("#reviewBundleNotice"); notice.classList.remove("hidden");
       notice.replaceChildren(el("strong", "", t("发现 {short} 条短对话，其中 {clean} 条没有写入或附件。", {short: data.summary.short_conversations, clean: data.summary.clean_one_off_candidates})), el("code", "", data.bundle_path), el("span", "", t("回到 Codex 输入“复核一次性对话”。")));
     } catch (error) { toast(t("短对话扫描失败：{error}", {error: error.message})); }
@@ -882,7 +962,7 @@
     const items = state.auto.preview.proposals.filter(item => state.auto.selected.has(item.session_id) && !item.blocked_reason).map(item => ({session_id: item.session_id, action: item.action}));
     try {
       const data = await api("/api/auto-apply", {method: "POST", body: JSON.stringify({preset: "space", items})});
-      state.catalog = data.catalog; state.confirmationSheet = null; state.manifests = [];
+      state.catalog = data.catalog; applyExecutionState(data.execution_state);
       renderAll(); await loadAutoPreview(); switchView("queue");
       toast(t("已加入 {count} 条计划，尚未移动或删除任何会话", {count: data.applied}));
     } catch (error) { toast(labels[error.message] ? labelFor(error.message) : t("批量计划失败：{error}", {error: error.message})); }
@@ -891,7 +971,7 @@
   async function clearAutoPlans() {
     try {
       const data = await api("/api/auto-clear", {method: "POST", body: "{}"});
-      state.catalog = data.catalog; state.confirmationSheet = null; state.manifests = [];
+      state.catalog = data.catalog; applyExecutionState(data.execution_state);
       renderAll(); await loadAutoPreview(); toast(t("已清除 {count} 条自动计划", {count: data.removed}));
     } catch (error) { toast(t("清除失败：{error}", {error: error.message})); }
   }
@@ -903,13 +983,13 @@
   }
 
   async function refreshCatalog() {
-    const button = $("#refreshBtn"); button.disabled = true; button.textContent = t("刷新中…");
+    const button = $("#refreshBtn"); button.disabled = true; button.textContent = t("刷新会话中…");
     try {
       const data = await api("/api/refresh", {method: "POST", body: "{}"});
-      state.catalog = data.catalog; state.confirmationSheet = null; state.manifests = [];
+      state.catalog = data.catalog; applyExecutionState(data.execution_state);
       renderAll(); await loadAutoPreview(); toast(t("已刷新本机会话"));
     } catch (error) { toast(t("刷新失败：{error}", {error: error.message})); }
-    finally { button.disabled = false; button.textContent = t("刷新"); }
+    finally { button.disabled = false; button.textContent = t("刷新会话"); }
   }
 
   async function chooseColdStorageDirectory() {
@@ -944,6 +1024,7 @@
   async function initialize() {
     const data = await api("/api/bootstrap");
     state.csrf = data.csrf; state.catalog = data.catalog; state.settings = data.settings; state.capabilities = data.capabilities;
+    applyExecutionState(data.execution_state);
     Object.entries(state.settings).forEach(([key, value]) => { const node = $(`[name="${key}"]`); if (node) node.value = value; });
     const picker = $("#chooseColdStorageBtn");
     picker.disabled = !state.capabilities.native_directory_picker;
@@ -988,7 +1069,7 @@
     const payload = Object.fromEntries(new FormData(event.currentTarget));
     try {
       const data = await api("/api/settings", {method: "POST", body: JSON.stringify(payload)});
-      state.settings = data.settings; state.catalog = data.catalog; state.confirmationSheet = null; state.manifests = [];
+      state.settings = data.settings; state.catalog = data.catalog; applyExecutionState(data.execution_state);
       renderAll(); await loadAutoPreview(); toast(t("设置已保存"));
     } catch (error) { toast(labelFor(error.message)); }
   });

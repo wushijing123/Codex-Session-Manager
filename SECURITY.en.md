@@ -41,7 +41,7 @@ Do not include these in issues, pull requests, releases, or commits:
 
 ## Reporting a vulnerability
 
-This is a private repository. Use a private security report visible only to maintainers. If GitHub Private vulnerability reporting is not enabled, contact the repository owner directly and do not create a public issue.
+Prefer **Security → Report a vulnerability** so the report is visible only to maintainers. If that entry is not enabled, open only a detail-free public issue asking for a private contact channel. Do not publish reproduction steps, real session data, or exploitable details.
 
 Include the affected version, a minimal reproduction, likely impact, and synthetic evidence without real session data.
 

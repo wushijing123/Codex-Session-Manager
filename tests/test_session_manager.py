@@ -166,6 +166,10 @@ class SessionManagerTest(unittest.TestCase):
     def latest_manifest(self) -> Path:
         return max((self.app / "manifests").glob("*.json"), key=lambda p: p.stat().st_mtime_ns)
 
+    @staticmethod
+    def file_mode(path: Path) -> int:
+        return path.stat().st_mode & 0o777
+
     def test_database_selection_unindexed_and_pin_gate(self) -> None:
         catalog = scan_catalog(self.codex, self.app, self.pins)
         self.assertTrue(str(catalog["selected_database"]).endswith("/.codex/state_5.sqlite"))
@@ -619,6 +623,7 @@ class SessionManagerTest(unittest.TestCase):
             "fresh_pin_snapshot_required",
             {item["code"] for item in sheet["blockers"]},
         )
+        self.assertIn("通过 Skill 重新启动看板", sheet["blockers"][0]["message"])
 
     def test_confirmation_sheet_warns_about_important_permanent_delete(self) -> None:
         dashboard = DashboardState(
@@ -954,6 +959,26 @@ class SessionManagerTest(unittest.TestCase):
         self.assertTrue(self.log.exists())
 
     def test_copy_interruption_rolls_back_before_cross_volume_move(self) -> None:
+        self.app.mkdir(parents=True)
+        (self.app / "plans.json").write_text(
+            json.dumps({"version": 1, "plans": {SESSION_ID: "cold_archive"}}),
+            encoding="utf-8",
+        )
+        (self.app / "auto-plans.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "plans": {
+                        SESSION_ID: {
+                            "action": "cold_archive",
+                            "preset": "space",
+                            "planned_at": "2026-08-23T00:00:00+00:00",
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
         self.command(
             "prepare",
             "--action",
@@ -991,6 +1016,18 @@ class SessionManagerTest(unittest.TestCase):
             conn.execute("SELECT COUNT(*) FROM threads WHERE id=?", (SESSION_ID,)).fetchone()[0],
         )
         conn.close()
+        self.assertEqual(
+            "cold_archive",
+            json.loads((self.app / "plans.json").read_text(encoding="utf-8"))["plans"][
+                SESSION_ID
+            ],
+        )
+        self.assertIn(
+            SESSION_ID,
+            json.loads((self.app / "auto-plans.json").read_text(encoding="utf-8"))[
+                "plans"
+            ],
+        )
 
     def test_cold_storage_target_cannot_overlap_codex_home(self) -> None:
         with self.assertRaisesRegex(
@@ -1009,7 +1046,27 @@ class SessionManagerTest(unittest.TestCase):
 
     def test_cold_archive_and_full_restore_round_trip(self) -> None:
         cold = self.root / "cold"
-        self.command(
+        self.app.mkdir(parents=True)
+        (self.app / "plans.json").write_text(
+            json.dumps({"version": 1, "plans": {SESSION_ID: "cold_archive"}}),
+            encoding="utf-8",
+        )
+        (self.app / "auto-plans.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "plans": {
+                        SESSION_ID: {
+                            "action": "cold_archive",
+                            "preset": "space",
+                            "planned_at": "2026-08-23T00:00:00+00:00",
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        result = self.command(
             "prepare",
             "--action",
             "cold_archive",
@@ -1022,7 +1079,10 @@ class SessionManagerTest(unittest.TestCase):
             "--target",
             str(cold),
         )
+        self.assertNotIn("confirm:", result.stdout)
         manifest = self.latest_manifest()
+        self.assertEqual(0o600, self.file_mode(manifest))
+        self.assertEqual(0o600, self.file_mode(manifest.with_suffix(".json.sha256")))
         payload = json.loads(manifest.read_text(encoding="utf-8"))
         self.command(
             "apply",
@@ -1035,14 +1095,26 @@ class SessionManagerTest(unittest.TestCase):
             "--fixture-mode",
         )
         self.assertFalse(self.log.exists())
+        plans = json.loads((self.app / "plans.json").read_text(encoding="utf-8"))["plans"]
+        self.assertNotIn(SESSION_ID, plans)
+        auto_plans = json.loads((self.app / "auto-plans.json").read_text(encoding="utf-8"))[
+            "plans"
+        ]
+        self.assertNotIn(SESSION_ID, auto_plans)
         conn = sqlite3.connect(self.codex / "state_5.sqlite")
         self.assertEqual(1, conn.execute("SELECT COUNT(*) FROM threads").fetchone()[0])
         conn.close()
         package = next(cold.glob("*/package.json")).parent
+        self.assertEqual(0o700, self.file_mode(package))
         package_metadata = json.loads((package / "package.json").read_text(encoding="utf-8"))
+        self.assertEqual(0o600, self.file_mode(package / "package.json"))
+        self.assertEqual(0o600, self.file_mode(package / "package.json.sha256"))
         if __import__("shutil").which("zstd"):
             self.assertEqual("zstd", package_metadata["compression"])
             self.assertTrue((package / "session.jsonl.zst").is_file())
+            self.assertEqual(0o600, self.file_mode(package / "session.jsonl.zst"))
+        else:
+            self.assertEqual(0o600, self.file_mode(package / "session.jsonl"))
         (self.app / "settings.json").write_text(
             json.dumps({"cold_storage_dir": str(cold)}), encoding="utf-8"
         )
@@ -1061,6 +1133,14 @@ class SessionManagerTest(unittest.TestCase):
         )
         self.assertTrue(self.log.exists())
         self.assertFalse(package.exists())
+        self.assertEqual(
+            {},
+            json.loads((self.app / "plans.json").read_text(encoding="utf-8"))["plans"],
+        )
+        self.assertEqual(
+            {},
+            json.loads((self.app / "auto-plans.json").read_text(encoding="utf-8"))["plans"],
+        )
         conn = sqlite3.connect(self.codex / "state_5.sqlite")
         self.assertEqual(2, conn.execute("SELECT COUNT(*) FROM threads").fetchone()[0])
         conn.close()
@@ -1068,8 +1148,109 @@ class SessionManagerTest(unittest.TestCase):
             payload["items"][0]["source_sha256"],
             __import__("hashlib").sha256(self.log.read_bytes()).hexdigest(),
         )
+        self.assertFalse((self.app / "restore-verified.json").exists())
+
+    def test_mark_restore_verified_writes_redacted_local_capability_marker(self) -> None:
+        self.app.mkdir(parents=True, exist_ok=True)
+
+        session_actions.mark_restore_verified(self.app)
+
+        payload = json.loads(
+            (self.app / "restore-verified.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(1, payload["version"])
+        self.assertTrue(payload["verified"])
+        self.assertEqual("closed_app_restore", payload["mechanism"])
+        self.assertIn("verified_at", payload)
+        self.assertNotIn("session_id", payload)
+        self.assertNotIn("title", payload)
+        self.assertNotIn("path", payload)
+
+    def test_clear_completed_session_plans_only_removes_matching_actions(self) -> None:
+        self.app.mkdir(parents=True, exist_ok=True)
+        (self.app / "plans.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "plans": {
+                        SESSION_ID: "quarantine",
+                        "01900000-0000-7000-8000-000000000002": "cold_archive",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        (self.app / "auto-plans.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "plans": {
+                        SESSION_ID: {"action": "quarantine"},
+                        "01900000-0000-7000-8000-000000000002": {
+                            "action": "cold_archive"
+                        },
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        session_actions.clear_completed_session_plans(
+            self.app, [SESSION_ID, "01900000-0000-7000-8000-000000000002"], expected_actions={"cold_archive"}
+        )
+
+        plans = json.loads((self.app / "plans.json").read_text(encoding="utf-8"))["plans"]
+        auto_plans = json.loads((self.app / "auto-plans.json").read_text(encoding="utf-8"))["plans"]
+        self.assertEqual("quarantine", plans[SESSION_ID])
+        self.assertIn(SESSION_ID, auto_plans)
+        self.assertNotIn("01900000-0000-7000-8000-000000000002", plans)
+        self.assertNotIn("01900000-0000-7000-8000-000000000002", auto_plans)
+
+    def test_prepare_can_optionally_show_confirmation_phrase(self) -> None:
+        result = self.command(
+            "prepare",
+            "--action",
+            "permanent_delete",
+            "--session-id",
+            SESSION_ID,
+            "--codex-home",
+            str(self.codex),
+            "--pinned-file",
+            str(self.pins),
+            "--show-confirmation",
+        )
+
+        self.assertIn("confirm: PERMANENT-DELETE", result.stdout)
+
+    def test_sqlite_backup_uses_private_permissions(self) -> None:
+        target = self.app / "backups" / "copy.sqlite"
+
+        session_actions.sqlite_backup(self.codex / "state_5.sqlite", target)
+
+        self.assertTrue(target.exists())
+        self.assertEqual(0o600, self.file_mode(target))
 
     def test_direct_permanent_delete_retains_only_redacted_audit(self) -> None:
+        self.app.mkdir(parents=True)
+        (self.app / "plans.json").write_text(
+            json.dumps({"version": 1, "plans": {SESSION_ID: "permanent_delete"}}),
+            encoding="utf-8",
+        )
+        (self.app / "auto-plans.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "plans": {
+                        SESSION_ID: {
+                            "action": "permanent_delete",
+                            "preset": "manual",
+                            "planned_at": "2026-08-23T00:00:00+00:00",
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
         self.command(
             "prepare",
             "--action",
@@ -1098,6 +1279,14 @@ class SessionManagerTest(unittest.TestCase):
         self.assertFalse(self.log.exists())
         self.assertFalse(manifest.exists())
         self.assertFalse(manifest.with_suffix(".json.sha256").exists())
+        self.assertEqual(
+            {},
+            json.loads((self.app / "plans.json").read_text(encoding="utf-8"))["plans"],
+        )
+        self.assertEqual(
+            {},
+            json.loads((self.app / "auto-plans.json").read_text(encoding="utf-8"))["plans"],
+        )
         conn = sqlite3.connect(self.codex / "state_5.sqlite")
         self.assertEqual(
             0,
@@ -1117,6 +1306,26 @@ class SessionManagerTest(unittest.TestCase):
         self.assertNotIn("source_path", json.dumps(audit, ensure_ascii=False))
 
     def test_quarantine_blocks_early_purge_then_allows_exact_purge(self) -> None:
+        self.app.mkdir(parents=True)
+        (self.app / "plans.json").write_text(
+            json.dumps({"version": 1, "plans": {SESSION_ID: "quarantine"}}),
+            encoding="utf-8",
+        )
+        (self.app / "auto-plans.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "plans": {
+                        SESSION_ID: {
+                            "action": "quarantine",
+                            "preset": "space",
+                            "planned_at": "2026-08-23T00:00:00+00:00",
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
         self.command(
             "prepare",
             "--action",
@@ -1147,6 +1356,33 @@ class SessionManagerTest(unittest.TestCase):
         started = datetime.fromisoformat(package_metadata["quarantine_started_at"])
         expires = datetime.fromisoformat(package_metadata["expires_at"])
         self.assertEqual(14 * 86400, int((expires - started).total_seconds()))
+        self.assertEqual(
+            {},
+            json.loads((self.app / "plans.json").read_text(encoding="utf-8"))["plans"],
+        )
+        self.assertEqual(
+            {},
+            json.loads((self.app / "auto-plans.json").read_text(encoding="utf-8"))["plans"],
+        )
+        (self.app / "plans.json").write_text(
+            json.dumps({"version": 1, "plans": {SESSION_ID: "purge_after_quarantine"}}),
+            encoding="utf-8",
+        )
+        (self.app / "auto-plans.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "plans": {
+                        SESSION_ID: {
+                            "action": "purge_after_quarantine",
+                            "preset": "manual",
+                            "planned_at": "2026-08-23T01:00:00+00:00",
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
         self.command(
             "purge",
             "--package",
@@ -1160,6 +1396,12 @@ class SessionManagerTest(unittest.TestCase):
             expect=2,
         )
         self.assertTrue(package.exists())
+        self.assertEqual(
+            "purge_after_quarantine",
+            json.loads((self.app / "plans.json").read_text(encoding="utf-8"))["plans"][
+                SESSION_ID
+            ],
+        )
         self.command(
             "purge",
             "--package",
@@ -1175,6 +1417,12 @@ class SessionManagerTest(unittest.TestCase):
             expect=2,
         )
         self.assertTrue(package.exists())
+        self.assertEqual(
+            "purge_after_quarantine",
+            json.loads((self.app / "plans.json").read_text(encoding="utf-8"))["plans"][
+                SESSION_ID
+            ],
+        )
         self.command(
             "purge",
             "--package",
@@ -1191,6 +1439,14 @@ class SessionManagerTest(unittest.TestCase):
         )
         self.assertFalse(package.exists())
         self.assertFalse(manifest.exists())
+        self.assertEqual(
+            {},
+            json.loads((self.app / "plans.json").read_text(encoding="utf-8"))["plans"],
+        )
+        self.assertEqual(
+            {},
+            json.loads((self.app / "auto-plans.json").read_text(encoding="utf-8"))["plans"],
+        )
         purge_audits = [
             json.loads(path.read_text(encoding="utf-8"))
             for path in (self.app / "audit").glob("*.json")
@@ -1324,7 +1580,11 @@ class SessionManagerTest(unittest.TestCase):
         lsof = next(command for command in calls if command[0] == "lsof")
         self.assertIn(str(database), lsof)
         self.assertIn(str(wal), lsof)
-        self.assertTrue(any(command[0] == "pgrep" for command in calls))
+        pgrep = next(command for command in calls if command[0] == "pgrep")
+        self.assertEqual(
+            r"/Applications/(Codex|ChatGPT)\.app/Contents/MacOS/(Codex|ChatGPT)( |$)",
+            pgrep[-1],
+        )
 
     def test_launch_and_quit_reports_helper_when_quit_request_fails(self) -> None:
         dashboard = object.__new__(DashboardState)
@@ -1337,11 +1597,272 @@ class SessionManagerTest(unittest.TestCase):
                 side_effect=RuntimeError("codex_desktop_quit_request_failed"),
             ),
         ):
-            result = dashboard.launch_and_quit_codex("manifest", "confirmation")
+            result = dashboard.launch_and_quit_codex("manifest")
 
         self.assertEqual(helper, result["helper"])
         self.assertTrue(result["manual_exit_required"])
         self.assertEqual([], result["requested_apps"])
+
+    def test_execution_state_restores_confirmed_sheet_and_manifest_after_restart(self) -> None:
+        manifest = self.app / "manifests" / "manifest.json"
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_text("{}", encoding="utf-8")
+        (self.app / "settings.json").write_text(
+            json.dumps({"cold_storage_dir": str(self.root / "cold")}),
+            encoding="utf-8",
+        )
+        catalog = {
+            "mutation_allowed": True,
+            "selected_database": "/tmp/state.sqlite",
+            "database_ambiguous": False,
+            "pin_snapshot_status": "snapshot",
+            "sessions": [
+                {
+                    "id": SESSION_ID,
+                    "title": "冷存档恢复测试",
+                    "actual_state": "archived",
+                    "planned_action": "cold_archive",
+                    "recommendation": "cold_archive",
+                    "size_bytes": 1234,
+                    "updated_at": 2_000_000_000,
+                    "mtime_ns": 1,
+                    "pinned": False,
+                    "permanent_protection": False,
+                    "state_conflict": False,
+                    "relation_count": 0,
+                    "write_signals": 0,
+                    "business_turns": 1,
+                    "has_attachments": False,
+                    "semantic_review": None,
+                }
+            ],
+        }
+        with mock.patch("lib.server.scan_catalog", side_effect=lambda *args: deepcopy(catalog)):
+            dashboard = DashboardState(
+                self.codex,
+                self.app,
+                SKILL_DIR / "assets/dashboard",
+                self.pins,
+                False,
+            )
+            sheet = dashboard.confirmation_sheet()
+            with mock.patch.object(
+                dashboard,
+                "prepare_plans",
+                return_value=[
+                    {
+                        "path": str(manifest),
+                        "manifest_id": "manifest-1",
+                        "action": "cold_archive",
+                        "session_ids": [SESSION_ID],
+                        "bytes": 1234,
+                        "volume_notes": ["cross_volume"],
+                    }
+                ],
+            ):
+                manifests = dashboard.confirm_sheet_button(sheet["sheet_id"], False, True)
+            self.assertEqual("cold_archive", manifests[0]["action"])
+
+            restarted = DashboardState(
+                self.codex,
+                self.app,
+                SKILL_DIR / "assets/dashboard",
+                self.pins,
+                False,
+            )
+            payload = restarted.execution_state_payload()
+
+        self.assertTrue(payload["confirmation_sheet"]["confirmed"])
+        self.assertEqual("ready", payload["manifests"][0]["status"])
+        self.assertEqual(["cross_volume"], payload["manifests"][0]["volume_notes"])
+        self.assertNotIn("confirmation_phrase", payload["manifests"][0])
+
+    def test_execution_state_rehydrates_unconfirmed_sheet_after_restart(self) -> None:
+        self.app.mkdir(parents=True, exist_ok=True)
+        (self.app / "settings.json").write_text(
+            json.dumps({"cold_storage_dir": str(self.root / "cold")}),
+            encoding="utf-8",
+        )
+        catalog = {
+            "mutation_allowed": True,
+            "selected_database": "/tmp/state.sqlite",
+            "database_ambiguous": False,
+            "pin_snapshot_status": "snapshot",
+            "sessions": [
+                {
+                    "id": SESSION_ID,
+                    "title": "冷存档恢复测试",
+                    "actual_state": "archived",
+                    "planned_action": "cold_archive",
+                    "recommendation": "cold_archive",
+                    "size_bytes": 1234,
+                    "updated_at": 2_000_000_000,
+                    "mtime_ns": 1,
+                    "pinned": False,
+                    "permanent_protection": False,
+                    "state_conflict": False,
+                    "relation_count": 0,
+                    "write_signals": 0,
+                    "business_turns": 1,
+                    "has_attachments": False,
+                    "semantic_review": None,
+                }
+            ],
+        }
+        with mock.patch("lib.server.scan_catalog", side_effect=lambda *args: deepcopy(catalog)):
+            dashboard = DashboardState(
+                self.codex,
+                self.app,
+                SKILL_DIR / "assets/dashboard",
+                self.pins,
+                False,
+            )
+            sheet = dashboard.confirmation_sheet()
+            restarted = DashboardState(
+                self.codex,
+                self.app,
+                SKILL_DIR / "assets/dashboard",
+                self.pins,
+                False,
+            )
+            manifests = restarted.confirm_sheet_button(sheet["sheet_id"], False, True)
+
+        self.assertEqual("cold_archive", manifests[0]["action"])
+
+    def test_refresh_reconciles_completed_cold_and_quarantine_plans(self) -> None:
+        cold_id = "01900000-0000-7000-8000-000000000111"
+        quarantine_id = "01900000-0000-7000-8000-000000000112"
+        purge_id = "01900000-0000-7000-8000-000000000113"
+        self.app.mkdir(parents=True, exist_ok=True)
+        (self.app / "plans.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "plans": {
+                        cold_id: "cold_archive",
+                        quarantine_id: "quarantine",
+                        purge_id: "purge_after_quarantine",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        (self.app / "auto-plans.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "plans": {
+                        cold_id: {"action": "cold_archive"},
+                        quarantine_id: {"action": "quarantine"},
+                        purge_id: {"action": "purge_after_quarantine"},
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        catalog = {
+            "mutation_allowed": True,
+            "selected_database": "/tmp/state.sqlite",
+            "database_ambiguous": False,
+            "pin_snapshot_status": "snapshot",
+            "sessions": [
+                {"id": cold_id, "actual_state": "cold"},
+                {"id": quarantine_id, "actual_state": "quarantine"},
+                {"id": purge_id, "actual_state": "quarantine"},
+            ],
+        }
+        with mock.patch("lib.server.scan_catalog", side_effect=lambda *args: deepcopy(catalog)):
+            dashboard = DashboardState(
+                self.codex,
+                self.app,
+                SKILL_DIR / "assets/dashboard",
+                self.pins,
+                False,
+            )
+            refreshed = dashboard.refresh()
+
+        self.assertEqual("cold", refreshed["sessions"][0]["actual_state"])
+        self.assertEqual(
+            {},
+            json.loads((self.app / "plans.json").read_text(encoding="utf-8"))["plans"],
+        )
+        self.assertEqual(
+            {},
+            json.loads((self.app / "auto-plans.json").read_text(encoding="utf-8"))["plans"],
+        )
+
+    def test_execution_state_marks_manifest_failed_from_helper_log(self) -> None:
+        manifest = self.app / "manifests" / "manifest.json"
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_text("{}", encoding="utf-8")
+        log_path = self.app / "helper-logs" / "manifest-2.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text("BLOCKED: fresh_pinned_snapshot_required\n", encoding="utf-8")
+        (self.app / "execution-state.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "confirmation_sheet": {"sheet_id": "sheet-1", "confirmed": True},
+                    "manifests": [
+                        {
+                            "path": str(manifest),
+                            "manifest_id": "manifest-2",
+                            "action": "cold_archive",
+                            "session_ids": [SESSION_ID],
+                            "bytes": 1234,
+                            "volume_notes": [],
+                        }
+                    ],
+                    "purge_requests": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        (self.app / "helpers.json").write_text(
+            json.dumps(
+                {
+                    "helpers": [
+                        {
+                            "manifest_id": "manifest-2",
+                            "pid": 999999,
+                            "log": str(log_path),
+                            "launched_at": datetime.now(timezone.utc).isoformat(),
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        catalog = {
+            "mutation_allowed": True,
+            "selected_database": "/tmp/state.sqlite",
+            "database_ambiguous": False,
+            "pin_snapshot_status": "snapshot",
+            "sessions": [
+                {
+                    "id": SESSION_ID,
+                    "title": "冷存档恢复测试",
+                    "actual_state": "archived",
+                    "planned_action": "cold_archive",
+                    "recommendation": "cold_archive",
+                    "size_bytes": 1234,
+                }
+            ],
+        }
+        with mock.patch("lib.server.scan_catalog", side_effect=lambda *args: deepcopy(catalog)):
+            dashboard = DashboardState(
+                self.codex,
+                self.app,
+                SKILL_DIR / "assets/dashboard",
+                self.pins,
+                False,
+            )
+            payload = dashboard.execution_state_payload()
+
+        self.assertEqual("failed", payload["manifests"][0]["status"])
+        self.assertEqual(
+            "fresh_pinned_snapshot_required", payload["manifests"][0]["detail"]
+        )
 
     def test_macos_directory_picker_returns_selected_folder_and_free_space(self) -> None:
         dashboard = object.__new__(DashboardState)
@@ -1450,6 +1971,22 @@ class SessionManagerTest(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(0, install_skill.run(args))
 
+    def test_safe_installer_rejects_noncanonical_source(self) -> None:
+        home = self.root / "home"
+        source = home / "Downloads" / install_skill.SKILL_NAME
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text("valid", encoding="utf-8")
+        args = SimpleNamespace(
+            source=source,
+            home=home,
+            targets=["codex"],
+            dry_run=False,
+            verify=False,
+            migrate_legacy=False,
+        )
+        with self.assertRaisesRegex(ValueError, "source_must_be_canonical"):
+            install_skill.run(args)
+
     def test_safe_installer_never_overwrites_a_conflicting_entry(self) -> None:
         home = self.root / "home"
         source = home / ".agents/skills" / install_skill.SKILL_NAME
@@ -1463,6 +2000,7 @@ class SessionManagerTest(unittest.TestCase):
             targets=["codex"],
             dry_run=False,
             verify=False,
+            migrate_legacy=False,
         )
         with contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(1, install_skill.run(args))

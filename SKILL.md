@@ -1,6 +1,6 @@
 ---
-name: wushijing-codex-session-manager
-description: "仅供吴大咪本人使用的 Codex 会话生命周期管理 Skill。用于盘点 Codex 当前、置顶、已归档和未索引 session，按需预览真实聊天并生成本地摘要，扫描不超过 3 轮的一次性短对话并由 Codex 语义复核，自动批量整理归档会话，生成本地操作确认单、审计报告和生命周期看板，以及执行冷存档、14 天可恢复隔离、恢复或用户明确选择的永久删除。触发词包括“盘点 Codex 会话”“查看归档 session”“查看会话聊天记录”“自动整理 Codex 归档”“扫描 3 轮内对话”“复核一次性对话”“哪些对话可以删”“打开会话生命周期看板”“冷存档 Codex 对话”“恢复 Codex 会话”“垃圾焚烧厂永久删除”。"
+name: codex-session-lifecycle-manager
+description: "Local-first Codex session lifecycle manager for inventory, review, cold storage, quarantine, restore, and explicit permanent deletion. It scans active, pinned, archived, and unindexed sessions, previews real conversations on demand, generates local receipts and audit reports, and keeps Chinese and English dashboards in sync. Trigger phrases include “盘点 Codex 会话”, “查看归档 session”, “打开会话生命周期看板”, “冷存档 Codex 对话”, and “恢复 Codex 会话”."
 ---
 
 # Codex 会话生命周期管理

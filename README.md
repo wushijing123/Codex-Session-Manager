@@ -7,7 +7,9 @@
 
 一个本地优先、安全分层、可视化的 Codex 会话生命周期管理 Skill。它帮助你看清会话现状、整理历史归档、释放空间，并在任何真实移动或删除发生前提供明确的保护检查和确认链路。
 
-> 当前版本：`0.5.0`。默认界面为中文，可在右上角切换 English。
+> 当前版本：`0.5.1`。默认界面为中文，可在右上角切换 English。公开发行版采用 MIT License，欢迎社区协作，但所有动作边界仍以本地验证结果为准。
+
+核心承诺：在本地找到并安全迁移 Codex 会话，保留可校验恢复路径，不上传任何聊天数据。
 
 ## 为什么做这个项目
 
@@ -63,21 +65,30 @@ Codex 越好用，Session 就越容易失控。
 | 审计报告 | 输出 JSON、Markdown 和 HTML，不提交真实数据到仓库 |
 | 工程化交付 | 安装器、Doctor、跨 macOS/Linux CI、标签发布和安装包 |
 
+### 四个动作，不再混淆
+
+| 动作 | 实际发生什么 | 是否释放空间 |
+| --- | --- | --- |
+| Codex 归档 | 从常用侧边栏移出，聊天仍保留在 Codex 本地目录 | 否 |
+| 锁定此会话 | 只是不参与本工具的整理计划，文件位置不变 | 否 |
+| 冷存档 | 校验后移出 Codex 索引并保存为可恢复包 | 只有目标在另一块磁盘时才释放原磁盘空间 |
+| 14 天隔离 | 移到本地隔离区，倒计时内仍可恢复 | 取决于隔离区所在磁盘 |
+
 ## 五分钟安装
 
 前置要求：Python 3.11+、已安装 Codex。Node.js 只在开发或本地语法检查时需要。
 
 ```bash
 mkdir -p ~/.agents/skills
-gh repo clone wushijing123/wushijing-codex-session-manager \
-  ~/.agents/skills/wushijing-codex-session-manager
-cd ~/.agents/skills/wushijing-codex-session-manager
+git clone https://github.com/wushijing123/wushijing-codex-session-manager.git \
+  ~/.agents/skills/codex-session-lifecycle-manager
+cd ~/.agents/skills/codex-session-lifecycle-manager
 
 python3 scripts/install_skill.py
 python3 scripts/doctor.py
 ```
 
-安装器只创建指向同一维护源的软链接，不覆盖已有目录。默认验证 Codex、Claude Code、Antigravity 和 WorkBuddy 四个入口。
+安装器只创建指向同一维护源的软链接，不覆盖已有目录。默认只安装 Codex 入口；需要所有可用入口时使用 `--targets all`。
 
 只安装部分入口：
 
@@ -100,6 +111,18 @@ python3 scripts/session_manager.py dashboard --no-open
 ```
 
 终端会输出带一次性启动令牌的本地地址。不要分享或记录该地址。
+
+直接从终端启动时可以盘点、搜索和制定计划；真实迁移或删除还需要由 Skill 同步一次最新置顶快照。这是执行门禁，不是页面故障。
+
+## 五分钟演示
+
+不想连接自己的 `~/.codex` 时，可直接启动一套完全虚构的本地 fixture：
+
+```bash
+python3 scripts/demo_dashboard.py --no-open
+```
+
+它会打印一个本地 URL，并生成临时 `Codex home`、SQLite、JSONL、冷存档目录和隔离包。默认在进程退出后自动清理；若要保留现场排查，用 `--keep-fixture`。
 
 ## 常用命令
 
@@ -198,6 +221,14 @@ CI 会在 macOS、Linux 与 Python 3.11/3.13 上验证项目，并生成可下�
 - [贡献指南](CONTRIBUTING.md)
 - [版本记录](CHANGELOG.md)
 
+## 社区与发布
+
+- 许可证：MIT，见 [LICENSE](LICENSE)
+- 贡献指南：见 [贡献指南](CONTRIBUTING.md)
+- 行为准则：见 [行为准则](CODE_OF_CONDUCT.md)
+- 路线图：见 [路线图](ROADMAP.md)
+- 验证记录：见 [验证说明](docs/VERIFICATION.md)
+
 ## 项目状态
 
-本项目是个人私有仓库，不代表 OpenAI 或官方 Codex 产品，也不提供云端会话同步。macOS 是完整执行链路的主要验证平台；Linux 用于扫描、看板、报告与 CI 验证。当前不要把未完成实机恢复验证的冷存档用于唯一一份重要会话。
+本项目是社区可用的本地优先 Skill，不代表 OpenAI 或官方 Codex 产品，也不提供云端会话同步。macOS 是完整执行链路的主要验证平台；Linux 用于扫描、看板、报告与 CI 验证。当前不要把未完成实机恢复验证的冷存档用于唯一一份重要会话。

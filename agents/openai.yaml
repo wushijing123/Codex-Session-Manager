@@ -1,4 +1,4 @@
 interface:
-  display_name: "Codex 会话生命周期管理"
-  short_description: "中英双语本地盘点、确认、整理与安全清理 Codex 会话"
-  default_prompt: "使用 $wushijing-codex-session-manager 只读扫描 Codex 会话；默认打开中文可视化首页，按需切换英文。点击会话时展示摘要与真实聊天预览，页面选择只生成计划；永久删除只接受用户手动明确选择。"
+  display_name: "Codex Session Lifecycle Manager"
+  short_description: "Bilingual local inventory, confirmation, organization, and safe cleanup for Codex sessions"
+  default_prompt: "Use $codex-session-lifecycle-manager to scan Codex sessions read-only; open the Chinese dashboard by default and switch to English when needed. Conversation details show summaries and real chat previews, page actions only create plans, and permanent deletion requires explicit manual selection."

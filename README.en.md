@@ -7,7 +7,9 @@
 
 A local-first, safety-layered, visual lifecycle manager for Codex sessions. It helps you understand session state, organize archived history, reclaim storage, and see every safety check before any real move or deletion occurs.
 
-> Current version: `0.5.0`. The dashboard defaults to Chinese and can be switched to English from the top-right corner.
+> Current version: `0.5.1`. The dashboard defaults to Chinese and can be switched to English from the top-right corner. The public release uses the MIT License, and community contributions are welcome as long as local verification still defines the action boundary.
+
+Core promise: find and safely move Codex sessions locally, keep a verifiable restore path, and never upload chat data.
 
 ## Why this project exists
 
@@ -63,21 +65,30 @@ This project therefore treats sessions as stateful digital assets with different
 | Audit reports | Produces JSON, Markdown, and HTML without committing real data |
 | Project delivery | Safe installer, Doctor, macOS/Linux CI, tagged releases, and installable packages |
 
+### Four actions, clearly separated
+
+| Action | What actually happens | Frees disk space? |
+| --- | --- | --- |
+| Codex archive | Leaves the regular sidebar while the chat remains in Codex local storage | No |
+| Lock this session | Excludes it from this tool's cleanup plans; the file does not move | No |
+| Cold storage | Verifies and removes it from the Codex index, then keeps a recoverable package | Only when the target is on another disk |
+| 14-day quarantine | Moves it into a local recovery window before final deletion | Depends on the quarantine disk |
+
 ## Five-minute installation
 
 Requirements: Python 3.11+ and Codex. Node.js is needed only for development or local JavaScript checks.
 
 ```bash
 mkdir -p ~/.agents/skills
-gh repo clone wushijing123/wushijing-codex-session-manager \
-  ~/.agents/skills/wushijing-codex-session-manager
-cd ~/.agents/skills/wushijing-codex-session-manager
+git clone https://github.com/wushijing123/wushijing-codex-session-manager.git \
+  ~/.agents/skills/codex-session-lifecycle-manager
+cd ~/.agents/skills/codex-session-lifecycle-manager
 
 python3 scripts/install_skill.py
 python3 scripts/doctor.py
 ```
 
-The installer creates links to one canonical source and never overwrites an existing directory. By default, it verifies Codex, Claude Code, Antigravity, and WorkBuddy entry points.
+The installer creates links to one canonical source and never overwrites an existing directory. By default, it installs the Codex entry only; use `--targets all` to create every available entry point.
 
 Install selected entry points only:
 
@@ -100,6 +111,18 @@ python3 scripts/session_manager.py dashboard --no-open
 ```
 
 The terminal prints a local URL with a one-time launch token. Do not share or store that URL.
+
+A terminal-only launch supports inventory, search, and planning. Real migration or deletion also requires the Skill to sync a fresh pinned-session snapshot. That is an execution gate, not a dashboard error.
+
+## Five-minute demo
+
+If you do not want to point the dashboard at your real `~/.codex`, launch a fully fictional local fixture instead:
+
+```bash
+python3 scripts/demo_dashboard.py --no-open
+```
+
+It prints a localhost URL and creates a temporary Codex home, SQLite database, JSONL logs, cold-storage root, and quarantine package. The fixture is removed when the process exits unless you pass `--keep-fixture`.
 
 ## Common commands
 
@@ -186,6 +209,14 @@ Read the [contributing guide](CONTRIBUTING.en.md) before making changes.
 - [Contributing](CONTRIBUTING.en.md)
 - [Changelog](CHANGELOG.md)
 
+## Community and release
+
+- License: MIT, see [LICENSE](LICENSE)
+- Contributing: see [Contributing](CONTRIBUTING.en.md)
+- Code of Conduct: see [Code of Conduct](CODE_OF_CONDUCT.en.md)
+- Roadmap: see [Roadmap](ROADMAP.en.md)
+- Verification: see [Verification](docs/VERIFICATION.en.md)
+
 ## Project status
 
-This is a private personal repository. It is not an OpenAI or official Codex product and does not provide cloud session synchronization. macOS is the primary platform for the complete execution flow; Linux is validated for scanning, dashboard, reports, and CI. Do not use the not-yet-validated cold restore path as the only copy of an important session.
+This is a community-usable, local-first Skill. It is not an OpenAI or official Codex product and does not provide cloud session synchronization. macOS is the primary platform for the complete execution flow; Linux is validated for scanning, dashboard, reports, and CI. Do not use the not-yet-validated cold restore path as the only copy of an important session.

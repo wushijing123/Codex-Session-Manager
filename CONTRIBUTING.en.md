@@ -10,6 +10,7 @@
 - Prefer recoverable actions over permanent deletion
 - Support safety claims with synthetic regression tests
 - Keep the default Chinese and English UI complete together
+- Follow the [Code of Conduct](CODE_OF_CONDUCT.en.md)
 
 ## Development setup
 
@@ -67,8 +68,11 @@ A pull request must describe:
 - Test evidence
 - Compatibility or migration impact
 - Chinese/English UI parity
+- Whether the public docs and verification notes were updated
 
 Never upload real databases, session content, reports, manifests, or tokens.
+
+Read the [Roadmap](ROADMAP.en.md) and [Verification](docs/VERIFICATION.en.md) before a public release.
 
 ## Versioning
 
