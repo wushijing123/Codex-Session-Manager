@@ -7,9 +7,11 @@
 
 A local-first, safety-layered, visual lifecycle manager for Codex sessions. It helps you understand session state, organize archived history, reclaim storage, and see every safety check before any real move or deletion occurs.
 
-> Current version: `0.5.1`. The dashboard defaults to Chinese and can be switched to English from the top-right corner. The public release uses the MIT License, and community contributions are welcome as long as local verification still defines the action boundary.
+> Current version: `0.6.0`. The dashboard defaults to Chinese and can be switched to English from the top-right corner. The public release uses the MIT License, and community contributions are welcome as long as local verification still defines the action boundary.
 
 Core promise: find and safely move Codex sessions locally, keep a verifiable restore path, and never upload chat data.
+
+![Home dashboard running on fully fictional data](assets/demo/dashboard-home.jpg)
 
 ## Why this project exists
 
@@ -45,8 +47,8 @@ This project therefore treats sessions as stateful digital assets with different
 
 1. **Home** — lifecycle, recommendations, storage, archive age, and safety health
 2. **Sessions** — one recommended plan plus on-demand conversation details
-3. **Plan** — impact review, second confirmation, and immutable execution manifests
-4. **Settings** — inactivity thresholds, automation retention, and a native cold-storage folder picker
+3. **Plan** — impact review and one confirmation for recoverable actions; permanent deletion gets an extra confirmation
+4. **Settings** — inactivity thresholds, automation retention, and a native-first cold-storage folder picker
 
 ## Highlights
 
@@ -61,7 +63,7 @@ This project therefore treats sessions as stateful digital assets with different
 | Native folder picker | Selects a macOS external-storage folder, shows free space, and leaves settings unchanged when canceled |
 | Semantic review bundle | Extracts minimum content from conversations with up to three user turns |
 | Layered actions | Permanent protection, cold storage, quarantine, restore, and manual permanent deletion |
-| Double confirmation | Plan, receipt, second confirmation, immutable manifest, and process gate |
+| Risk-based confirmation | Recoverable actions create a manifest after one confirmation; permanent deletion adds a separate confirmation and process gate |
 | Audit reports | Produces JSON, Markdown, and HTML without committing real data |
 | Project delivery | Safe installer, Doctor, macOS/Linux CI, tagged releases, and installable packages |
 
@@ -123,6 +125,8 @@ python3 scripts/demo_dashboard.py --no-open
 ```
 
 It prints a localhost URL and creates a temporary Codex home, SQLite database, JSONL logs, cold-storage root, and quarantine package. The fixture is removed when the process exits unless you pass `--keep-fixture`.
+
+![Execution plan using fictional data](assets/demo/dashboard-plan.jpg)
 
 ## Common commands
 

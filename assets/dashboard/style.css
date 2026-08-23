@@ -806,6 +806,18 @@ tbody tr:hover { background: rgba(23, 75, 150, .045); }
 .danger-callout::before { content: "!"; position: absolute; left: 16px; top: 50%; width: 22px; height: 22px; display: grid; place-items: center; border: 2px solid var(--red); border-radius: 50%; transform: translateY(-50%); }
 .danger-callout::after { content: "危险\A操作"; white-space: pre; position: absolute; right: 10px; top: 50%; padding: 3px 7px; border: 2px solid var(--red); font-family: var(--font-display); line-height: 1.05; text-align: center; transform: translateY(-50%) rotate(1deg); }
 
+html[lang="en"] .advanced-panel[open] .advanced-toggle::after { content: "Close"; }
+html[lang="en"] .home-hero::after,
+html[lang="en"] .confirmation-panel::before {
+  white-space: normal;
+  writing-mode: vertical-rl;
+  text-orientation: upright;
+  letter-spacing: .08em;
+}
+html[lang="en"] .home-hero::after { content: "STATE"; }
+html[lang="en"] .confirmation-panel::before { content: "RECORD"; }
+html[lang="en"] .danger-callout::after { content: "DANGER"; white-space: normal; }
+
 .receipt-section { border-top-color: var(--line-strong); }
 .receipt-row { border: 1px dotted var(--line-strong); border-radius: 0; background: transparent; }
 .blocker-section {
@@ -862,6 +874,7 @@ tbody tr:hover { background: rgba(23, 75, 150, .045); }
   main { width: calc(100% - 18px); padding-inline: 17px; }
   .confirmation-panel { padding: 24px 18px 22px; }
   .confirmation-panel::before { content: "档案凭证"; position: static; display: inline-block; margin-bottom: 14px; white-space: normal; font-size: 13px; }
+  html[lang="en"] .confirmation-panel::before { content: "OPERATION RECORD"; writing-mode: initial; letter-spacing: normal; }
   .confirmation-metrics > div { min-height: 96px; }
 }
 

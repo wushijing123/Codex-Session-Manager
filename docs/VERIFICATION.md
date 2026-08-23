@@ -15,7 +15,9 @@
 | `python3 -m unittest discover -s tests -v` | 通过 | 合成回归测试全部通过 |
 | `node --check assets/dashboard/i18n.js` | 通过 | 语法检查通过 |
 | `node --check assets/dashboard/app.js` | 通过 | 语法检查通过 |
-| `python3 scripts/package_release.py --output-dir dist` | 通过 | 生成 `dist/codex-session-lifecycle-manager-v0.5.1.zip` |
+| `python3 scripts/package_release.py --output-dir dist` | 通过 | 生成 `dist/codex-session-lifecycle-manager-v0.6.0.zip` |
+
+真实恢复验证必须在 Codex 仍运行时启动，并显式使用 `--verify-closed-loop`。助手确认“启动时正在运行 → 完全退出 → 内容和索引恢复成功”后，才会写入本机能力标记；手工创建标记文件不属于验证。
 
 ## 暂未验证
 

@@ -171,7 +171,7 @@
       <div id="queueList" class="queue-list"></div>
       <div id="confirmationSheet" class="hidden"></div>
       <div id="manifestList" class="queue-list manifest-list"></div>
-      <div class="queue-footer">
+      <div id="queueFooter" class="queue-footer">
         <div><span class="muted">本次计划影响空间</span><strong id="plannedBytes">0 B</strong></div>
         <div class="footer-actions"><button id="exportPlanBtn" class="secondary">导出计划</button><button id="prepareBtn">查看操作确认单</button></div>
       </div>
@@ -185,8 +185,9 @@
         <div class="settings-field">
           <label for="coldStorageDir">冷存档目录</label>
           <div class="path-picker-control">
-            <input id="coldStorageDir" name="cold_storage_dir" placeholder="执行冷存档前设置">
-            <button id="chooseColdStorageBtn" type="button" class="secondary">选择目录</button>
+            <input id="coldStorageDir" name="cold_storage_dir" placeholder="尚未选择目录" readonly>
+            <button id="chooseColdStorageBtn" type="button">选择目录</button>
+            <button id="editColdStorageBtn" type="button" class="secondary">手动输入（高级）</button>
           </div>
           <small id="coldStorageStatus" class="field-status" role="status" aria-live="polite"></small>
         </div>

@@ -471,16 +471,21 @@ def clear_completed_session_plans(
             write_json(app_dir / "auto-plans.json", auto_payload)
 
 
-def mark_restore_verified(app_dir: Path) -> None:
+def mark_restore_verified(app_dir: Path, *, codex_running_at_launch: bool) -> None:
+    if not codex_running_at_launch:
+        raise ActionBlocked("restore_verification_requires_running_codex_at_launch")
+    marker = app_dir / "restore-verified.json"
     write_json(
-        app_dir / "restore-verified.json",
+        marker,
         {
             "version": 1,
             "verified": True,
             "verified_at": utc_now(),
-            "mechanism": "closed_app_restore",
+            "mechanism": "running_to_closed_restore",
+            "codex_running_at_launch": True,
         },
     )
+    os.chmod(marker, 0o600)
 
 
 def remove_package_files(package: dict[str, Any]) -> None:
@@ -708,6 +713,13 @@ def restore_package(args: argparse.Namespace) -> None:
     if args.confirm != expected:
         raise ActionBlocked(f"confirmation_phrase_mismatch: expected '{expected}'")
     codex_home = args.codex_home.expanduser().resolve()
+    if args.verify_closed_loop and args.fixture_mode:
+        raise ActionBlocked("restore_verification_not_available_in_fixture_mode")
+    codex_running_at_launch = False
+    if args.verify_closed_loop:
+        codex_running_at_launch = bool(codex_processes(codex_home))
+        if not codex_running_at_launch:
+            raise ActionBlocked("restore_verification_requires_running_codex_at_launch")
     process_gate(codex_home, args.fixture_mode, args.wait_for_exit_seconds)
     database, fingerprint = select_database(codex_home)
     target = Path(metadata["original_path"]).expanduser().resolve()
@@ -773,24 +785,26 @@ def restore_package(args: argparse.Namespace) -> None:
         for path in package_files:
             os.unlink(path)
         package_dir.rmdir()
-        append_audit(
-            args.app_dir.expanduser().resolve(),
-            {
-                "event": "restore",
-                "completed_at": utc_now(),
-                "session_ids": [metadata["session_id"]],
-                "restored_path": str(target),
-                "content_retained": True,
-            },
-        )
+        restore_event = {
+            "event": "restore",
+            "completed_at": utc_now(),
+            "session_ids": [metadata["session_id"]],
+            "restored_path": str(target),
+            "content_retained": True,
+        }
+        if args.operation_id:
+            restore_event["manifest_id"] = args.operation_id
+        append_audit(args.app_dir.expanduser().resolve(), restore_event)
         app_dir = args.app_dir.expanduser().resolve()
         try:
             clear_completed_session_plans(app_dir, [metadata["session_id"]])
         except OSError:
             pass
-        if not args.fixture_mode:
+        if args.verify_closed_loop:
             try:
-                mark_restore_verified(app_dir)
+                mark_restore_verified(
+                    app_dir, codex_running_at_launch=codex_running_at_launch
+                )
             except OSError:
                 pass
         print(target)
@@ -862,16 +876,16 @@ def purge_package(args: argparse.Namespace) -> None:
     os.chmod(parent_digest, 0o600)
     os.unlink(parent_manifest)
     os.unlink(parent_digest)
-    append_audit(
-        app_dir,
-        {
-            "event": "purge",
-            "completed_at": utc_now(),
-            "session_ids": [metadata["session_id"]],
-            "bytes_purged": int(metadata["original_size"]),
-            "content_retained": False,
-        },
-    )
+    purge_event = {
+        "event": "purge",
+        "completed_at": utc_now(),
+        "session_ids": [metadata["session_id"]],
+        "bytes_purged": int(metadata["original_size"]),
+        "content_retained": False,
+    }
+    if args.operation_id:
+        purge_event["manifest_id"] = args.operation_id
+    append_audit(app_dir, purge_event)
     try:
         clear_completed_session_plans(app_dir, [metadata["session_id"]])
     except OSError:
@@ -882,6 +896,7 @@ def purge_package(args: argparse.Namespace) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Codex session destructive action helper")
     parser.add_argument("--app-dir", type=Path, default=default_app_dir())
+    parser.add_argument("--helper-token", help=argparse.SUPPRESS)
     sub = parser.add_subparsers(dest="command", required=True)
 
     prepare_parser = sub.add_parser("prepare")
@@ -905,6 +920,8 @@ def build_parser() -> argparse.ArgumentParser:
     restore_parser.add_argument("--codex-home", type=Path, default=Path.home() / ".codex")
     restore_parser.add_argument("--fixture-mode", action="store_true", help=argparse.SUPPRESS)
     restore_parser.add_argument("--wait-for-exit-seconds", type=int, default=900)
+    restore_parser.add_argument("--operation-id", help=argparse.SUPPRESS)
+    restore_parser.add_argument("--verify-closed-loop", action="store_true")
 
     purge_parser = sub.add_parser("purge")
     purge_parser.add_argument("--package", type=Path, required=True)
@@ -913,6 +930,7 @@ def build_parser() -> argparse.ArgumentParser:
     purge_parser.add_argument("--parent-manifest", type=Path, required=True)
     purge_parser.add_argument("--pinned-file", type=Path, required=True)
     purge_parser.add_argument("--fixture-mode", action="store_true", help=argparse.SUPPRESS)
+    purge_parser.add_argument("--operation-id", help=argparse.SUPPRESS)
     return parser
 
 

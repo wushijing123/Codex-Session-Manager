@@ -241,44 +241,51 @@ class DashboardState:
 
     def restore_verified(self) -> bool:
         payload = read_json(self.restore_verified_path, {})
-        return bool(isinstance(payload, dict) and payload.get("verified") is True)
+        return bool(
+            isinstance(payload, dict)
+            and payload.get("verified") is True
+            and payload.get("mechanism") == "running_to_closed_restore"
+            and payload.get("codex_running_at_launch") is True
+        )
 
     def helper_records(self) -> list[dict[str, Any]]:
         payload = read_json(self.app_dir / "helpers.json", {"helpers": []})
         helpers = payload.get("helpers")
         if not isinstance(helpers, list):
             return []
-        active: list[dict[str, Any]] = []
-        changed = False
-        for helper in helpers:
-            try:
-                os.kill(int(helper["pid"]), 0)
-                active.append(helper)
-            except (KeyError, OSError, ValueError):
-                active.append(helper)
-        if changed:
-            write_json(self.app_dir / "helpers.json", {"helpers": active})
-        return active
+        return [helper for helper in helpers if isinstance(helper, dict)]
 
     def active_helper_for(self, operation: dict[str, Any]) -> dict[str, Any] | None:
         key = str(operation.get("manifest_id") or "")
         session_ids = {str(value).lower() for value in operation.get("session_ids", [])}
         kind = str(operation.get("kind") or "manifest")
+        matches: list[dict[str, Any]] = []
         for helper in self.helper_records():
             helper_kind = str(helper.get("kind") or "manifest")
             helper_sessions = {
                 str(value).lower() for value in helper.get("session_ids", []) if value
             }
             if kind == "manifest" and key and str(helper.get("manifest_id")) == key:
-                return helper
-            if (
+                matches.append(helper)
+            elif (
                 helper_kind == kind
                 and helper_sessions
                 and session_ids
                 and helper_sessions == session_ids
             ):
-                return helper
-        return None
+                matches.append(helper)
+        if not matches:
+            return None
+        # A manifest can be retried after a helper exits. Prefer a live helper, then
+        # the newest record, so an old log cannot make a new run look stopped.
+        matches.sort(
+            key=lambda item: (
+                self.helper_is_alive(item),
+                str(item.get("launched_at") or ""),
+            ),
+            reverse=True,
+        )
+        return matches[0]
 
     def latest_audit_event(
         self, event_name: str, session_ids: set[str], manifest_id: str | None = None
@@ -342,13 +349,32 @@ class DashboardState:
             write_json(auto_path, auto_payload)
         return True
 
-    @staticmethod
-    def helper_is_alive(helper: dict[str, Any]) -> bool:
+    def helper_is_alive(self, helper: dict[str, Any]) -> bool:
         try:
-            os.kill(int(helper["pid"]), 0)
-            return True
+            pid = int(helper["pid"])
+            os.kill(pid, 0)
         except (KeyError, OSError, ValueError):
             return False
+        token = str(helper.get("helper_token") or "")
+        if not token:
+            # A PID alone is not an identity: it may have been recycled since an
+            # older helper record was written. Legacy tokenless records must be
+            # treated as stopped and can be retried safely.
+            return False
+        try:
+            result = subprocess.run(
+                ["ps", "-p", str(pid), "-o", "command="],
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        return (
+            result.returncode == 0
+            and token in result.stdout
+            and str(self.action_script) in result.stdout
+        )
 
     @staticmethod
     def tail_text(path: Path, limit: int = 4096) -> str:
@@ -387,7 +413,9 @@ class DashboardState:
             }
         if kind == "restore":
             package_exists = self.package_exists(str(manifest.get("package") or ""))
-            completed = self.latest_audit_event("restore", session_ids)
+            completed = self.latest_audit_event(
+                "restore", session_ids, str(manifest.get("manifest_id") or "")
+            )
             if (
                 completed
                 and not package_exists
@@ -396,7 +424,9 @@ class DashboardState:
             ):
                 return {"status": "completed", "detail": "restore_applied"}
         elif action == "purge_after_quarantine":
-            completed = self.latest_audit_event("purge", session_ids)
+            completed = self.latest_audit_event(
+                "purge", session_ids, str(manifest.get("manifest_id") or "")
+            )
             if completed and not self.package_exists(str(manifest.get("package") or "")):
                 return {"status": "completed", "detail": "purge_applied"}
         elif action == "permanent_delete":
@@ -469,11 +499,50 @@ class DashboardState:
         if action not in {"cold_archive", "quarantine", "permanent_delete"}:
             return True
         expected_ids = {str(value).lower() for value in manifest.get("session_ids", [])}
-        current: set[str] = set()
-        for record in self.catalog.get("sessions", []):
-            if self.execution_action(record) == action:
-                current.add(str(record.get("id", "")).lower())
-        return current == expected_ids
+        if not expected_ids:
+            return False
+        catalog_by_id = {
+            str(record.get("id", "")).lower(): record
+            for record in self.catalog.get("sessions", [])
+        }
+        return all(
+            session_id in catalog_by_id
+            and self.execution_action(catalog_by_id[session_id]) == action
+            for session_id in expected_ids
+        )
+
+    def confirmed_manifest_record(
+        self, manifest_path: Path, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Bind helper launch to the exact execution sheet the user confirmed."""
+        manifest_id = str(payload.get("manifest_id") or "")
+        action = str(payload.get("action") or "")
+        session_ids = {
+            str(item.get("session_id") or "").lower()
+            for item in payload.get("items", [])
+            if isinstance(item, dict) and item.get("session_id")
+        }
+        for item in self.load_execution_state().get("manifests", []):
+            record = self.sanitize_operation_record(item)
+            if record.get("kind") != "manifest":
+                continue
+            if record.get("status") not in {None, "", "ready"}:
+                continue
+            try:
+                recorded_path = Path(str(record.get("path") or "")).expanduser().resolve()
+            except (OSError, RuntimeError):
+                continue
+            recorded_ids = {
+                str(value).lower() for value in record.get("session_ids", []) if value
+            }
+            if (
+                recorded_path == manifest_path
+                and str(record.get("manifest_id") or "") == manifest_id
+                and str(record.get("action") or "") == action
+                and recorded_ids == session_ids
+            ):
+                return record
+        raise PermissionError("manifest_not_confirmed")
 
     @staticmethod
     def package_exists(package_value: str) -> bool:
@@ -921,6 +990,7 @@ class DashboardState:
             "automation_keep_runs",
         }
         current = read_json(self.app_dir / "settings.json", {})
+        original = dict(current)
         for key, value in updates.items():
             if key not in allowed:
                 continue
@@ -938,10 +1008,35 @@ class DashboardState:
                     raise ValueError("invalid_automation_keep_runs")
                 current[key] = parsed
                 continue
+            if key == "cold_storage_dir":
+                raw = str(value).strip()
+                current[key] = (
+                    str(self.validate_storage_directory(Path(raw))) if raw else ""
+                )
+                continue
             current[key] = str(value)
         write_json(self.app_dir / "settings.json", current)
-        self.invalidate_pending_execution_state("planned_actions_changed_after_review")
+        if current != original:
+            self.invalidate_pending_execution_state("planned_actions_changed_after_review")
         return current
+
+    def validate_storage_directory(self, value: Path) -> Path:
+        try:
+            target = value.expanduser().resolve(strict=True)
+        except OSError as exc:
+            raise ValueError("directory_picker_invalid_selection") from exc
+        if not target.is_dir() or not os.access(target, os.W_OK | os.X_OK):
+            raise ValueError("directory_not_writable")
+        filesystem_root = Path(target.anchor).resolve()
+        home = Path.home().resolve()
+        codex_home = self.codex_home.resolve()
+        if (
+            target in {filesystem_root, home, codex_home}
+            or codex_home in target.parents
+            or target in codex_home.parents
+        ):
+            raise ValueError("unsafe_storage_target")
+        return target
 
     def select_directory(self) -> dict[str, Any]:
         osascript = shutil.which("osascript")
@@ -969,21 +1064,7 @@ end try
         selected = result.stdout.strip()
         if not selected:
             return {"selected": False}
-        try:
-            target = Path(selected).expanduser().resolve(strict=True)
-        except OSError as exc:
-            raise ValueError("directory_picker_invalid_selection") from exc
-        if not target.is_dir():
-            raise ValueError("directory_picker_invalid_selection")
-        filesystem_root = Path(target.anchor).resolve()
-        home = Path.home().resolve()
-        codex_home = self.codex_home.resolve()
-        if (
-            target in {filesystem_root, home, codex_home}
-            or codex_home in target.parents
-            or target in codex_home.parents
-        ):
-            raise ValueError("unsafe_storage_target")
+        target = self.validate_storage_directory(Path(selected))
         usage = shutil.disk_usage(target)
         return {"selected": True, "path": str(target), "free_bytes": usage.free}
 
@@ -1363,7 +1444,13 @@ end try
                 "bytes": int(record.get("size_bytes") or 0),
             }
 
-    def launch_purge(self, request: dict[str, Any], confirmation: str) -> dict[str, Any]:
+    def launch_purge(
+        self,
+        request: dict[str, Any],
+        confirmation: str,
+        operation_id: str,
+        helper_token: str,
+    ) -> dict[str, Any]:
         expected = str(request["confirmation_phrase"])
         if confirmation != expected:
             raise PermissionError("confirmation_phrase_mismatch")
@@ -1375,6 +1462,8 @@ end try
             str(self.action_script),
             "--app-dir",
             str(self.app_dir),
+            "--helper-token",
+            helper_token,
             "purge",
             "--package",
             str(request["package"]),
@@ -1384,6 +1473,8 @@ end try
             str(request["parent_manifest"]),
             "--pinned-file",
             str(self.pinned_file),
+            "--operation-id",
+            operation_id,
         ]
         with log_path.open("ab", buffering=0) as output:
             process = subprocess.Popen(
@@ -1401,6 +1492,17 @@ end try
         if not second_confirmation:
             raise PermissionError("second_confirmation_required")
         request = self.purge_request(session_id)
+        operation_id = f"purge-{session_id}-{secrets.token_hex(6)}"
+        helper_token = secrets.token_urlsafe(12)
+        pending_operation = {
+            "manifest_id": operation_id,
+            "action": "purge_after_quarantine",
+            "session_ids": [session_id],
+            "kind": "purge",
+        }
+        existing_helper = self.active_helper_for(pending_operation)
+        if existing_helper and self.helper_is_alive(existing_helper):
+            raise PermissionError("helper_already_running")
         purge_requests = [
             item
             for item in self.persisted_execution_state.get("purge_requests", [])
@@ -1411,7 +1513,26 @@ end try
         )
         self.persisted_execution_state["purge_requests"] = purge_requests
         self.save_execution_state()
-        helper = self.launch_purge(request, str(request["confirmation_phrase"]))
+        helper = self.launch_purge(
+            request,
+            str(request["confirmation_phrase"]),
+            operation_id,
+            helper_token,
+        )
+        helpers = read_json(self.app_dir / "helpers.json", {"helpers": []})
+        helper_records = [
+            item for item in helpers.get("helpers", []) if isinstance(item, dict)
+        ]
+        helper_records.append(
+            {
+                **pending_operation,
+                "pid": helper["pid"],
+                "log": helper["log"],
+                "helper_token": helper_token,
+                "launched_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+        write_json(self.app_dir / "helpers.json", {"helpers": helper_records})
         operations = [
             item
             for item in self.persisted_execution_state.get("manifests", [])
@@ -1420,13 +1541,13 @@ end try
         operations.append(
             self.sanitize_operation_record(
                 {
-                    "manifest_id": f"purge-{session_id}",
+                    "manifest_id": operation_id,
                     "action": "purge_after_quarantine",
                     "session_ids": [session_id],
                     "bytes": int(request["bytes"]),
                     "kind": "purge",
                     "package": request["package"],
-                    "status": "ready",
+                    "status": "running",
                 }
             )
         )
@@ -1450,6 +1571,7 @@ end try
         ):
             raise PermissionError("manifest_path_rejected")
         payload = read_json(manifest_path, {})
+        self.confirmed_manifest_record(manifest_path, payload)
         if not self.current_plan_matches_manifest(
             {
                 "action": payload.get("action"),
@@ -1464,9 +1586,7 @@ end try
         }
         active_helpers: list[dict[str, Any]] = []
         for helper in helpers.get("helpers", []):
-            try:
-                os.kill(int(helper["pid"]), 0)
-            except (KeyError, OSError, ValueError):
+            if not isinstance(helper, dict) or not self.helper_is_alive(helper):
                 continue
             active_helpers.append(helper)
             manifest_id = str(helper.get("manifest_id", ""))
@@ -1485,11 +1605,14 @@ end try
         log_dir = self.app_dir / "helper-logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         log_path = log_dir / f"{payload['manifest_id']}.log"
+        helper_token = secrets.token_urlsafe(12)
         command = [
             sys.executable,
             str(self.action_script),
             "--app-dir",
             str(self.app_dir),
+            "--helper-token",
+            helper_token,
             "apply",
             "--manifest",
             str(manifest_path),
@@ -1514,6 +1637,7 @@ end try
                 "manifest_id": payload["manifest_id"],
                 "pid": process.pid,
                 "log": str(log_path),
+                "helper_token": helper_token,
                 "kind": "manifest",
                 "action": payload.get("action"),
                 "session_ids": sorted(requested_ids),
@@ -1554,12 +1678,12 @@ end try
 
     def launch_restore(self, session_id: str) -> dict[str, Any]:
         request = self.restore_package_request(session_id)
+        operation_id = f"restore-{session_id}-{secrets.token_hex(6)}"
+        helper_token = secrets.token_urlsafe(12)
         helpers = read_json(self.app_dir / "helpers.json", {"helpers": []})
         active_helpers: list[dict[str, Any]] = []
         for helper in helpers.get("helpers", []):
-            try:
-                os.kill(int(helper["pid"]), 0)
-            except (KeyError, OSError, ValueError):
+            if not isinstance(helper, dict) or not self.helper_is_alive(helper):
                 continue
             active_helpers.append(helper)
             helper_sessions = {
@@ -1576,6 +1700,8 @@ end try
             str(self.action_script),
             "--app-dir",
             str(self.app_dir),
+            "--helper-token",
+            helper_token,
             "restore",
             "--package",
             str(request["package"]),
@@ -1585,6 +1711,8 @@ end try
             str(self.codex_home),
             "--wait-for-exit-seconds",
             "900",
+            "--operation-id",
+            operation_id,
         ]
         with log_path.open("ab", buffering=0) as output:
             process = subprocess.Popen(
@@ -1597,9 +1725,10 @@ end try
             )
         helpers["helpers"].append(
             {
-                "manifest_id": f"restore-{session_id}",
+                "manifest_id": operation_id,
                 "pid": process.pid,
                 "log": str(log_path),
+                "helper_token": helper_token,
                 "kind": "restore",
                 "action": "restore",
                 "session_ids": [session_id],
@@ -1615,7 +1744,7 @@ end try
         operations.append(
             self.sanitize_operation_record(
                 {
-                    "manifest_id": f"restore-{session_id}",
+                    "manifest_id": operation_id,
                     "action": "restore",
                     "session_ids": [session_id],
                     "bytes": int(request["bytes"]),
@@ -1753,10 +1882,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         "native_directory_picker": sys.platform == "darwin"
                         and bool(shutil.which("osascript")),
                         "indexed_restore_to_codex": restore_verified,
+                        "reason_code": "" if restore_verified else "restore_not_verified",
                         "reason": (
                             ""
                             if restore_verified
-                            else "真实关闭应用后的恢复闭环尚未通过；写入 app_dir/restore-verified.json 且 verified=true 后才会启用恢复按钮。"
+                            else "真实恢复闭环尚未通过。必须在 Codex 仍运行时使用 --verify-closed-loop 启动一次恢复；只有助手观察到运行中到完全退出并成功恢复后，按钮才会启用。"
                         ),
                     },
                 }

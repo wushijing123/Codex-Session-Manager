@@ -73,7 +73,8 @@
     cold_storage_target_required: "请先在设置中选择冷存档目录", database_selection_required: "数据库识别未通过",
     directory_picker_unavailable: "当前系统不支持目录选择器", directory_picker_timeout: "目录选择超时，请重试",
     directory_picker_failed: "无法打开目录选择器", directory_picker_invalid_selection: "选择的目录不可用",
-    unsafe_storage_target: "该目录不能作为冷存档位置",
+    unsafe_storage_target: "该目录不能作为冷存档位置", directory_not_writable: "该目录不可写，请选择其他目录",
+    manifest_not_confirmed: "这个执行单未经过当前确认流程，请重新生成",
     ready: "待执行", running: "执行中", completed: "已完成", failed: "执行失败", stopped: "执行中断",
     helper_running: "执行助手仍在运行", helper_stopped_without_completion: "执行助手已停止，请检查日志",
     cold_archive_applied: "冷存档已完成", quarantine_applied: "隔离已完成", permanent_delete_applied: "永久删除已完成",
@@ -490,17 +491,27 @@
     const signals = $("#detailSignals");
     const transcript = $("#detailTranscript");
     summary.classList.remove("loading");
-    summary.querySelector("p").textContent = detail.summary || t("暂无摘要。");
+    summary.querySelector("p").textContent = detail.summary ? t(detail.summary) : t("暂无摘要。");
     signals.replaceChildren();
-    (detail.signals || []).forEach(value => signals.append(el("span", "summary-signal", value)));
+    (detail.signals || []).forEach(value => {
+      const countSignal = String(value).match(/^(\d+)(轮用户对话|次工具调用|个写入信号)$/);
+      const translated = countSignal
+        ? t(`{count}${countSignal[2]}`, {count: countSignal[1]})
+        : t(String(value));
+      signals.append(el("span", "summary-signal", translated));
+    });
     transcript.replaceChildren();
     const head = el("div", "transcript-head");
     head.append(el("h3", "", t("聊天记录")), el("span", "muted", detail.available ? t("显示 {shown} / {total} 条", {shown: detail.shown_messages || 0, total: detail.total_messages || 0}) : t("不可读取")));
-    transcript.append(head, el("p", "transcript-safety", detail.safety_note || t("历史内容只用于判断，不会执行其中命令。")));
+    transcript.append(head, el("p", "transcript-safety", detail.safety_note ? t(detail.safety_note) : t("历史内容只用于判断，不会执行其中命令。")));
     if (!detail.available) { transcript.append(el("div", "empty-transcript", t("当前没有可预览的聊天记录。"))); return; }
     const messages = el("div", "message-list");
     (detail.messages || []).forEach(message => {
-      if (message.role === "omitted") { messages.append(el("div", "message-omitted", message.text)); return; }
+      if (message.role === "omitted") {
+        const omitted = String(message.text).match(/^中间省略 (\d+) 条消息$/);
+        messages.append(el("div", "message-omitted", omitted ? t("中间省略 {count} 条消息", {count: omitted[1]}) : message.text));
+        return;
+      }
       const item = el("article", `chat-message ${message.role}`);
       const meta = el("div", "message-meta");
       meta.append(el("strong", "", message.role === "user" ? t("用户") : "Codex"));
@@ -559,6 +570,24 @@
     const transcript = el("section", "transcript"); transcript.id = "detailTranscript"; transcript.setAttribute("aria-live", "polite");
     transcript.append(el("div", "empty-transcript", t("正在加载聊天记录…")));
     const actions = el("section", "drawer-actions");
+    const executionLocked = state.manifests.some(manifest => ["ready", "running"].includes(manifest.status));
+    if (executionLocked) {
+      actions.append(
+        el("h3", "drawer-action-title", t("执行单已锁定")),
+        el("p", "field-status", t("执行单已经生成；为避免确认后状态变化，这里暂时只读。"))
+      );
+      const reviewPlan = el("button", "primary", t("返回执行计划"));
+      reviewPlan.addEventListener("click", () => { closeDrawer(); switchView("queue"); });
+      actions.append(reviewPlan);
+      body.replaceChildren(summary, actions, transcript, detailMetadata(session));
+      const drawer = $("#drawer");
+      drawer.inert = false; drawer.classList.add("open"); drawer.setAttribute("aria-hidden", "false");
+      $("#drawerScrim").classList.add("open"); $("#drawerScrim").setAttribute("aria-hidden", "false");
+      document.body.classList.add("modal-open");
+      $("#closeDrawer").focus();
+      loadSessionContent(session);
+      return;
+    }
     actions.append(el("h3", "drawer-action-title", t("选择下一步")));
     if (session.actual_state === "archived") {
       const unarchive = el("button", "secondary", t("取消归档"));
@@ -573,9 +602,13 @@
     if (["cold", "quarantine"].includes(session.actual_state)) {
       const restore = el("button", "secondary", t("退出 Codex 并恢复"));
       restore.disabled = !state.capabilities.indexed_restore_to_codex;
-      if (restore.disabled) restore.title = state.capabilities.reason || t("当前机器还没有通过真实恢复闭环验证，恢复按钮保持禁用");
+      const restoreReason = state.capabilities.reason_code ? labelFor(state.capabilities.reason_code) : t(state.capabilities.reason || "当前机器还没有通过真实恢复闭环验证，恢复按钮保持禁用");
+      if (restore.disabled) restore.title = restoreReason;
       restore.addEventListener("click", () => launchRestore(session.id));
       actions.append(restore);
+      if (restore.disabled) {
+        actions.append(el("small", "field-status restore-gate-help", `${restoreReason} ${t("请按 docs/VERIFICATION.md 完成一次“运行中 → 退出 → 恢复”的真实验证。")}`));
+      }
     }
     if (session.actual_state === "quarantine" && session.purge_eligible) {
       const purge = el("button", "danger-button", t("永久删除"));
@@ -703,6 +736,7 @@
     const currentPlans = plans.filter(session => destructiveActions.has(session.planned_action));
     const legacyPlans = plans.filter(session => !destructiveActions.has(session.planned_action));
     const actionable = currentPlans.filter(session => !session.execution_blocker);
+    const executionActive = state.manifests.some(manifest => ["ready", "running"].includes(manifest.status));
     const appendPlan = (container, session, legacy = false) => {
       const item = el("article", `queue-item${session.execution_blocker ? " blocked" : ""}${legacy ? " legacy" : ""}`);
       const status = legacy ? t("旧版标记，仅记录，不会在这里执行") : session.execution_blocker ? labelFor(session.execution_blocker) :
@@ -715,13 +749,13 @@
       const cancel = el("button", "secondary", t("取消计划")); cancel.addEventListener("click", () => plan(session.id, null)); item.append(cancel);
       container.append(item);
     };
-    currentPlans.forEach(session => appendPlan(list, session));
-    if (!currentPlans.length) {
+    if (!executionActive) currentPlans.forEach(session => appendPlan(list, session));
+    if (!currentPlans.length && !state.manifests.length) {
       const empty = el("section", "empty-state");
       empty.append(el("h2", "", t("还没有可执行计划")), el("p", "muted", t("先去“会话”查看系统建议，加入计划后再回来确认。")));
       const button = el("button", "", t("查看整理建议")); button.addEventListener("click", () => switchView("sessions")); empty.append(button); list.append(empty);
     }
-    if (legacyPlans.length) {
+    if (legacyPlans.length && !executionActive) {
       const legacy = el("details", "panel legacy-plans");
       legacy.append(el("summary", "", t("{count} 条旧版标记（不会执行）", {count: legacyPlans.length})));
       const legacyList = el("div", "queue-list");
@@ -730,15 +764,20 @@
     }
     $("#plannedBytes").textContent = humanBytes(actionable.reduce((sum, session) => sum + Number(session.size_bytes || 0), 0));
     $("#planCount").textContent = String(currentPlans.length);
-    $("#prepareBtn").disabled = !actionable.length;
-    $("#capabilityNotice").textContent = t("计划不会自动执行。确认单只会再核对一次置顶、父子关系、数据库和 Codex 进程；确认后直接生成执行单，不再弹第三层窗口。");
+    $("#prepareBtn").disabled = executionActive || !actionable.length;
+    $("#queueFooter").classList.toggle("hidden", executionActive || !currentPlans.length);
+    $("#capabilityNotice").textContent = executionActive
+      ? t("执行单已生成。原计划已锁定，不再重复显示；点击下方按钮后，助手会等待 Codex 完全退出再执行。")
+      : state.manifests.length && !currentPlans.length
+        ? t("操作已有结果。这里保留完成或失败凭证，不再显示已经收口的旧计划。")
+        : t("计划不会自动执行。确认单只会再核对一次置顶、父子关系、数据库和 Codex 进程；确认后直接生成执行单，不再弹第三层窗口。");
     renderConfirmationSheet(); renderManifests();
   }
 
   function renderConfirmationSheet() {
     const host = $("#confirmationSheet"); host.replaceChildren();
     const sheet = state.confirmationSheet;
-    if (!sheet) { host.classList.add("hidden"); return; }
+    if (!sheet || (sheet.confirmed && state.manifests.length)) { host.classList.add("hidden"); return; }
     host.classList.remove("hidden");
     const panel = el("section", "confirmation-panel");
     const head = el("div", "confirmation-head");
@@ -1005,6 +1044,8 @@
         return;
       }
       $("#coldStorageDir").value = data.path;
+      $("#coldStorageDir").readOnly = true;
+      $("#editColdStorageBtn").textContent = t("手动输入（高级）");
       status.textContent = t("已选择，可用空间 {bytes}。点击“保存设置”后生效。", {bytes: humanBytes(data.free_bytes)});
     } catch (error) {
       status.textContent = "";
@@ -1013,6 +1054,17 @@
       button.disabled = !state.capabilities.native_directory_picker;
       button.textContent = t("选择目录");
     }
+  }
+
+  function toggleColdStorageManualInput() {
+    const input = $("#coldStorageDir");
+    const button = $("#editColdStorageBtn");
+    input.readOnly = !input.readOnly;
+    button.textContent = input.readOnly ? t("手动输入（高级）") : t("完成输入");
+    $("#coldStorageStatus").textContent = input.readOnly
+      ? t("手动路径会在保存时校验。")
+      : t("请输入已存在且可写的完整目录路径，保存时会立即校验。");
+    if (!input.readOnly) input.focus();
   }
 
   function exportPlan() {
@@ -1028,7 +1080,12 @@
     Object.entries(state.settings).forEach(([key, value]) => { const node = $(`[name="${key}"]`); if (node) node.value = value; });
     const picker = $("#chooseColdStorageBtn");
     picker.disabled = !state.capabilities.native_directory_picker;
-    if (picker.disabled) picker.title = t("当前系统不支持目录选择器");
+    if (picker.disabled) {
+      picker.title = t("当前系统不支持目录选择器");
+      $("#coldStorageDir").readOnly = false;
+      $("#editColdStorageBtn").classList.add("hidden");
+      $("#coldStorageStatus").textContent = t("当前系统不支持目录选择器，请手动输入完整路径。");
+    }
     renderAll(); switchView("home"); await loadAutoPreview();
   }
 
@@ -1038,6 +1095,7 @@
   $("#languageBtn").addEventListener("click", toggleLanguage);
   $("#refreshBtn").addEventListener("click", refreshCatalog);
   $("#chooseColdStorageBtn").addEventListener("click", chooseColdStorageDirectory);
+  $("#editColdStorageBtn").addEventListener("click", toggleColdStorageManualInput);
   $("#openSessionsBtn").addEventListener("click", () => switchView("sessions"));
   $("#openQueueBtn").addEventListener("click", () => switchView("queue"));
   $("#selectAllAutoBtn").addEventListener("click", () => setAutoSelection(true));
@@ -1070,6 +1128,11 @@
     try {
       const data = await api("/api/settings", {method: "POST", body: JSON.stringify(payload)});
       state.settings = data.settings; state.catalog = data.catalog; applyExecutionState(data.execution_state);
+      $("#coldStorageDir").value = data.settings.cold_storage_dir || "";
+      if (state.capabilities.native_directory_picker) {
+        $("#coldStorageDir").readOnly = true;
+        $("#editColdStorageBtn").textContent = t("手动输入（高级）");
+      }
       renderAll(); await loadAutoPreview(); toast(t("设置已保存"));
     } catch (error) { toast(labelFor(error.message)); }
   });

@@ -1153,18 +1153,59 @@ class SessionManagerTest(unittest.TestCase):
     def test_mark_restore_verified_writes_redacted_local_capability_marker(self) -> None:
         self.app.mkdir(parents=True, exist_ok=True)
 
-        session_actions.mark_restore_verified(self.app)
+        with self.assertRaisesRegex(
+            session_actions.ActionBlocked,
+            "restore_verification_requires_running_codex_at_launch",
+        ):
+            session_actions.mark_restore_verified(
+                self.app, codex_running_at_launch=False
+            )
+        session_actions.mark_restore_verified(
+            self.app, codex_running_at_launch=True
+        )
 
         payload = json.loads(
             (self.app / "restore-verified.json").read_text(encoding="utf-8")
         )
         self.assertEqual(1, payload["version"])
         self.assertTrue(payload["verified"])
-        self.assertEqual("closed_app_restore", payload["mechanism"])
+        self.assertEqual("running_to_closed_restore", payload["mechanism"])
+        self.assertTrue(payload["codex_running_at_launch"])
         self.assertIn("verified_at", payload)
+        self.assertEqual(0o600, self.file_mode(self.app / "restore-verified.json"))
         self.assertNotIn("session_id", payload)
         self.assertNotIn("title", payload)
         self.assertNotIn("path", payload)
+
+    def test_restore_gate_rejects_legacy_or_manually_edited_marker(self) -> None:
+        dashboard = object.__new__(DashboardState)
+        dashboard.app_dir = self.app
+        self.app.mkdir(parents=True, exist_ok=True)
+        marker = self.app / "restore-verified.json"
+
+        marker.write_text(json.dumps({"verified": True}), encoding="utf-8")
+        self.assertFalse(dashboard.restore_verified())
+
+        marker.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "verified": True,
+                    "mechanism": "running_to_closed_restore",
+                    "codex_running_at_launch": True,
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.assertTrue(dashboard.restore_verified())
+
+    def test_helper_liveness_rejects_legacy_pid_only_record(self) -> None:
+        dashboard = object.__new__(DashboardState)
+
+        with mock.patch("lib.server.os.kill") as kill:
+            self.assertFalse(dashboard.helper_is_alive({"pid": os.getpid()}))
+
+        kill.assert_called_once_with(os.getpid(), 0)
 
     def test_clear_completed_session_plans_only_removes_matching_actions(self) -> None:
         self.app.mkdir(parents=True, exist_ok=True)
@@ -1603,6 +1644,121 @@ class SessionManagerTest(unittest.TestCase):
         self.assertTrue(result["manual_exit_required"])
         self.assertEqual([], result["requested_apps"])
 
+    def test_each_quarantine_manifest_matches_its_own_planned_session(self) -> None:
+        first = "01900000-0000-7000-8000-000000000201"
+        second = "01900000-0000-7000-8000-000000000202"
+        dashboard = object.__new__(DashboardState)
+        dashboard.catalog = {
+            "sessions": [
+                {"id": first, "planned_action": "quarantine"},
+                {"id": second, "planned_action": "quarantine"},
+            ]
+        }
+
+        self.assertTrue(
+            dashboard.current_plan_matches_manifest(
+                {"action": "quarantine", "session_ids": [first]}
+            )
+        )
+        self.assertTrue(
+            dashboard.current_plan_matches_manifest(
+                {"action": "quarantine", "session_ids": [second]}
+            )
+        )
+        self.assertFalse(
+            dashboard.current_plan_matches_manifest(
+                {
+                    "action": "quarantine",
+                    "session_ids": ["01900000-0000-7000-8000-000000000299"],
+                }
+            )
+        )
+
+    def test_helper_launch_requires_exact_confirmed_manifest(self) -> None:
+        (self.app / "settings.json").parent.mkdir(parents=True, exist_ok=True)
+        (self.app / "settings.json").write_text(
+            json.dumps({"compression": "none"}), encoding="utf-8"
+        )
+        dashboard = DashboardState(
+            self.codex,
+            self.app,
+            SKILL_DIR / "assets/dashboard",
+            self.pins,
+            False,
+        )
+        dashboard.save_plan(SESSION_ID, "cold_archive")
+        manifest_path = self.app / "manifests" / "confirmed-test.json"
+        manifest = {
+            "manifest_id": "confirmed-test",
+            "action": "cold_archive",
+            "items": [{"session_id": SESSION_ID}],
+            "confirmation_phrase": "COLD-ARCHIVE confirmed-test",
+        }
+        session_actions.immutable_write(manifest_path, manifest)
+
+        with self.assertRaisesRegex(PermissionError, "manifest_not_confirmed"):
+            dashboard.launch_helper(str(manifest_path))
+
+        dashboard.persisted_execution_state["manifests"] = [
+            {
+                "path": str(manifest_path),
+                "manifest_id": "confirmed-test",
+                "action": "cold_archive",
+                "session_ids": [SESSION_ID],
+                "bytes": 1,
+                "kind": "manifest",
+                "status": "ready",
+            }
+        ]
+        dashboard.save_execution_state()
+        with mock.patch(
+            "lib.server.subprocess.Popen", return_value=SimpleNamespace(pid=4321)
+        ):
+            launched = dashboard.launch_helper(str(manifest_path))
+
+        self.assertEqual(4321, launched["pid"])
+        helper_state = json.loads(
+            (self.app / "helpers.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual("confirmed-test", helper_state["helpers"][0]["manifest_id"])
+
+    def test_purge_helper_is_persisted_as_running(self) -> None:
+        dashboard = object.__new__(DashboardState)
+        dashboard.app_dir = self.app
+        dashboard.persisted_execution_state = {
+            "version": 1,
+            "confirmation_sheet": None,
+            "manifests": [],
+            "purge_requests": [],
+        }
+        self.app.mkdir(parents=True, exist_ok=True)
+        request = {
+            "session_id": SESSION_ID,
+            "package": str(self.app / "quarantine" / "package"),
+            "parent_manifest": str(self.app / "manifests" / "parent.json"),
+            "confirmation_phrase": f"PURGE-FOREVER {SESSION_ID}",
+            "expires_at": datetime.now(timezone.utc).isoformat(),
+            "bytes": 99,
+        }
+        helper = {
+            "pid": 5432,
+            "log": str(self.app / "helper-logs" / "purge.log"),
+            "status": "purge_started",
+        }
+        with (
+            mock.patch.object(dashboard, "purge_request", return_value=request),
+            mock.patch.object(dashboard, "launch_purge", return_value=helper),
+        ):
+            result = dashboard.launch_purge_button(SESSION_ID, True)
+
+        self.assertEqual(5432, result["pid"])
+        persisted = json.loads(
+            (self.app / "execution-state.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual("running", persisted["manifests"][0]["status"])
+        helpers = json.loads((self.app / "helpers.json").read_text(encoding="utf-8"))
+        self.assertEqual("purge", helpers["helpers"][0]["kind"])
+
     def test_execution_state_restores_confirmed_sheet_and_manifest_after_restart(self) -> None:
         manifest = self.app / "manifests" / "manifest.json"
         manifest.parent.mkdir(parents=True, exist_ok=True)
@@ -1910,6 +2066,27 @@ class SessionManagerTest(unittest.TestCase):
         ):
             with self.assertRaisesRegex(ValueError, "unsafe_storage_target"):
                 dashboard.select_directory()
+
+    def test_cold_storage_setting_is_validated_before_it_is_saved(self) -> None:
+        dashboard = DashboardState(
+            self.codex,
+            self.app,
+            SKILL_DIR / "assets/dashboard",
+            self.pins,
+            False,
+        )
+        target = self.root / "external-volume" / "Codex cold storage"
+        target.mkdir(parents=True)
+
+        saved = dashboard.save_settings({"cold_storage_dir": str(target)})
+        self.assertEqual(str(target.resolve()), saved["cold_storage_dir"])
+
+        with self.assertRaisesRegex(ValueError, "directory_picker_invalid_selection"):
+            dashboard.save_settings(
+                {"cold_storage_dir": str(self.root / "missing-folder")}
+            )
+        with self.assertRaisesRegex(ValueError, "unsafe_storage_target"):
+            dashboard.save_settings({"cold_storage_dir": str(self.codex)})
 
     def test_dashboard_english_catalog_covers_static_and_dynamic_text(self) -> None:
         html = (SKILL_DIR / "assets/dashboard/index.html").read_text(encoding="utf-8")

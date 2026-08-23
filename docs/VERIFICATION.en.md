@@ -15,7 +15,9 @@ This file records the checks used to validate the public-release documentation a
 | `python3 -m unittest discover -s tests -v` | Pass | Synthetic regression tests passed |
 | `node --check assets/dashboard/i18n.js` | Pass | Syntax check passed |
 | `node --check assets/dashboard/app.js` | Pass | Syntax check passed |
-| `python3 scripts/package_release.py --output-dir dist` | Pass | Produced `dist/codex-session-lifecycle-manager-v0.5.1.zip` |
+| `python3 scripts/package_release.py --output-dir dist` | Pass | Produced `dist/codex-session-lifecycle-manager-v0.6.0.zip` |
+
+A real restore verification must start while Codex is still running and explicitly use `--verify-closed-loop`. The local capability marker is written only after the helper observes the running → fully closed → restored transition and verifies both content and index recovery. Manually creating the marker is not a verification.
 
 ## Not yet verified
 
