@@ -1,32 +1,17 @@
 # Roadmap
 
-This roadmap describes the public release direction only. It does not turn unverified capabilities into finished claims.
+## Shipped in v0.7.0
 
-## Done
+- Local session and full-text search, conversation reading, compressed logs, Markdown and local/embedded images
+- Codex deep links and native archive/unarchive/delete, with a verified recovery copy before deletion
+- Cross-page selection, suggestion filters, apply suggestions and real batch progress
+- Configurable backup location, cancellable backups, ZIP restore and 30-day Trash
+- Three themes (B by default), Chinese/English, mobile layouts and shared Skill installation
 
-- Local read-only inventory
-- A dashboard with Chinese default and English toggle
-- Plan / receipt / manifest separation
-- Official unarchive
-- Cold storage, 14-day quarantine, restore-side validation and commands
-- Real macOS closed-app cold restore loop
-- Installer, Doctor, packaging, and regression tests
+## Next
 
-## Near term
+- Track Codex protocol and transcript compatibility
+- Expand cross-platform restore verification; Windows remains unverified on a real machine
+- Evaluate Claude Code as another source; feasibility analysis only, not implemented
 
-- Tighten pre-execution validation so plans are harder to confuse with completed actions
-- Make cold storage, quarantine, and restore prompts easier to understand
-- Keep reducing duplicate entry points and low-value blockers
-- Keep Chinese and English copy in sync
-
-## Next phase
-
-- Build a restore regression matrix across Codex versions
-- Keep public documentation and verification notes aligned
-- Add more community-facing examples and troubleshooting notes
-
-## Long term
-
-- Keep the project local-first and least-privilege
-- Continue reducing interaction steps
-- Preserve auditable, reviewable, and recoverable action boundaries
+Keep the product local-first and focused. Do not add lifecycle charts, confirmation sheets or automatically execute deletion suggestions.

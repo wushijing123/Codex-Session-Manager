@@ -2,6 +2,12 @@
 
 [中文](ARCHITECTURE.md) · [English](ARCHITECTURE.en.md)
 
+## v0.7.0 架构
+
+当前主链路为 Dashboard → 鉴权的本机 API（`server.py`）→ `SessionTools`（`session_tools.py`）→ Codex 官方 App Server。只读盘点由 `core.py` 提供，`transcript_io.py` 读取普通／压缩日志，`attachments.py` 验证本地和内嵌图片。服务端管理批量进度及备份取消。ZIP 备份与回收站侧记独立于原生会话存储。三套主题共用 DOM 和操作逻辑，选择保存在浏览器。
+
+以下章节记录保留的 v0.6 冷存档／manifest 工具，不是当前首页主流程。
+
 ## 设计目标
 
 1. 本地优先：不依赖远程服务，不上传会话内容

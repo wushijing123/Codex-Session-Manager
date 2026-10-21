@@ -28,7 +28,7 @@ QUARANTINE_ID = "01900000-0000-7000-8000-00000000d004"
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Launch the Codex session lifecycle dashboard with fictional demo data."
+        description="Launch Codex-Session-Manager with fictional demo data."
     )
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--no-open", action="store_true")
@@ -42,11 +42,11 @@ def write_log(path: Path, session_id: str, title: str, user_text: str, assistant
         {"type": "session_meta", "payload": {"id": session_id}},
         {
             "type": "response_item",
-            "payload": {"role": "user", "content": [{"type": "output_text", "text": user_text}]},
+            "payload": {"type": "message", "role": "user", "content": [{"type": "output_text", "text": user_text}]},
         },
         {
             "type": "response_item",
-            "payload": {"role": "assistant", "content": [{"type": "output_text", "text": assistant_text}]},
+            "payload": {"type": "message", "role": "assistant", "phase": "final_answer", "content": [{"type": "output_text", "text": assistant_text}]},
         },
     ]
     path.write_text("\n".join(json.dumps(item, ensure_ascii=False) for item in events) + "\n", encoding="utf-8")
@@ -198,6 +198,27 @@ def create_demo_fixture(root: Path) -> dict[str, Path]:
             },
         ],
     )
+    # Additional fictional sessions exercise the simplified reader and suggestions.
+    conn = sqlite3.connect(codex_home / "state_5.sqlite")
+    samples = [
+        ("01900000-0000-7000-8000-00000000d005", "官网改版：导航与首页结构", "website", 45, False,
+         "首页要先回答产品是什么、适合谁、下一步做什么。帮我整理一个清晰的页面结构。",
+         "可以把首页收敛为四段：产品简介、实际使用场景、功能演示和开始使用。导航保留产品、文档和下载。"),
+        ("01900000-0000-7000-8000-00000000d006", "临时问候测试", "playground", 90, True,
+         "你好，测试一下连接。", "连接正常，可以开始了。"),
+        ("01900000-0000-7000-8000-00000000d007", "产品文档：会话搜索的交互", "session-library", 3, False,
+         "我想找回之前讨论过的海盐配色方案，但不记得对话标题。",
+         "搜索框支持按正文关键词查找。输入“海盐”，就能定位到这条历史会话，再回到 Codex 继续。"),
+    ]
+    for session_id, title, project, age, archived, user, assistant in samples:
+        path = codex_home / ("archived_sessions" if archived else "sessions") / f"rollout-demo-{session_id}.jsonl"
+        write_log(path, session_id, title, user, assistant)
+        conn.execute("INSERT INTO threads VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (
+            session_id, str(path), now - (age + 1) * 86400, now - age * 86400,
+            "vscode", f"/demo/{project}", title, 120, 1, int(archived),
+            now - age * 86400 if archived else None, "demo", user, None, "demo-model"))
+    conn.commit()
+    conn.close()
     create_package(
         cold_root,
         COLD_ID,
@@ -252,6 +273,7 @@ def launch_demo(args: argparse.Namespace) -> int:
         fixture["pinned_file"],
         False,
     )
+    state.is_demo = True
     server = DashboardServer(("127.0.0.1", args.port), state)
     url = f"http://127.0.0.1:{server.server_port}/?launch={state.launch_token}"
     print(url, flush=True)

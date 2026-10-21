@@ -18,16 +18,17 @@ The project treats these inputs as untrusted:
 
 ## Security guarantees
 
-- The dashboard binds only to `127.0.0.1`
-- Initial access requires a one-time launch token; POST requests require CSRF
-- Historical content is rendered with `textContent`, never as HTML or commands
-- Scanning is read-only by default and plans remain separate from actual state
-- Automatic recommendations never create permanent deletion plans
-- Permanent deletion requires an explicit choice, receipt, second confirmation, and process gate
-- Active, pinned, protected, conflicting, unindexed, ambiguous, or related sessions block execution
-- Actions are limited to validated exact files; recursive, wildcard, and symlink targets are rejected
-- Failures prefer rollback instead of hiding partial commits
-- Successful permanent deletion keeps only a redacted audit record
+- The library binds only to `127.0.0.1`; initial access needs a launch token and POST requests require CSRF.
+- Markdown is parsed locally with Marked and sanitized with a DOMPurify allowlist. Raw HTML remains literal text. Scripts, raw HTML images and links outside HTTP(S)/mailto are disabled; history never runs as commands. Local and embedded raster attachments are served only through an authenticated, bounded in-memory image cache; SVG, symlinks and remote image fetching are disabled.
+- Search and recommendations do not execute mutations. Clicking a direct action authorizes that action without a second dialog.
+- Archive, unarchive, and delete use the native Codex App Server, not direct SQLite edits. Unsupported methods are disabled.
+- Delete first saves and verifies a recovery copy. Only confirmed deletions are marked for Trash and expire after 30 days. Startup, library refresh and opening Trash clean up expired copies. Permanent removal is limited to marked recovery files; manual and legacy backups are retained.
+- Known pinned/protected sessions, the current session, and linked tasks block archive, unarchive and deletion, preventing native cascading operations on unselected linked tasks. Native writer refusals are not bypassed.
+- Backup sources must be exact session files under managed roots; downloads are confined to the internal or explicitly configured backup directories and validated backup ZIPs.
+- Operations are followed by a local rescan. Unverified completion is shown explicitly.
+- Legacy cold-storage/quarantine CLI tools retain their separate manifest and process requirements; those are not part of the simplified UI.
+
+- Restore validates backup IDs/hashes and stages files under managed session directories. It never overwrites existing session files; native Codex APIs rebuild the index. Compressed backups restore as plain JSONL; original backup bytes remain unchanged.
 
 ## Never upload
 

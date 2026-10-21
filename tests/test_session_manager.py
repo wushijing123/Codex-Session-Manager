@@ -658,42 +658,6 @@ class SessionManagerTest(unittest.TestCase):
         )
         self.assertGreaterEqual(len(warning["reasons"]), 4)
 
-    def test_dashboard_starts_with_visual_home_and_simple_navigation(self) -> None:
-        html = (SKILL_DIR / "assets/dashboard/index.html").read_text(encoding="utf-8")
-        javascript = (SKILL_DIR / "assets/dashboard/app.js").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn('id="view-home" class="view active"', html)
-        self.assertIn('id="lifecycleDonut"', html)
-        self.assertIn('id="storageStack"', html)
-        self.assertIn('id="ageChart"', html)
-        self.assertEqual(4, html.count('<button class="tab'))
-        self.assertNotIn('id="view-board"', html)
-        self.assertNotIn('id="view-scan"', html)
-        self.assertIn('class="skip-link"', html)
-        self.assertIn('class="panel advanced-panel"', html)
-        self.assertIn('id="loadMoreAutoBtn"', html)
-        self.assertIn('id="loadMoreExplorerBtn"', html)
-        self.assertIn('role="dialog"', html)
-        self.assertIn('id="finalConfirmDialog"', html)
-        self.assertNotIn("固定本地确认短语", javascript)
-        self.assertIn("confirm_sheet_button", (SKILL_DIR / "scripts/lib/server.py").read_text(encoding="utf-8"))
-        self.assertIn('api("/api/refresh"', javascript)
-        self.assertIn('api("/api/unarchive"', javascript)
-        self.assertIn('t("取消归档")', javascript)
-        self.assertIn('switchView("home")', javascript)
-        self.assertIn("visibleLimit: 25", javascript)
-        self.assertIn("explorerVisibleLimit: 50", javascript)
-        self.assertIn("清除旧计划", javascript)
-        self.assertIn("条可处理", javascript)
-        self.assertIn("条旧版标记（不会执行）", javascript)
-        self.assertIn("currentPlans.forEach", javascript)
-        self.assertNotIn("draggable", javascript)
-        stylesheet = (SKILL_DIR / "assets/dashboard/style.css").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn("@media (prefers-reduced-motion: reduce)", stylesheet)
-
     def test_official_unarchive_uses_exact_session_id_and_refreshes(self) -> None:
         dashboard = DashboardState(
             self.codex,

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import webbrowser
 from pathlib import Path
@@ -23,7 +24,7 @@ from lib.server import DashboardServer, DashboardState  # noqa: E402
 
 
 def common_parser(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--codex-home", type=Path, default=Path.home() / ".codex")
+    parser.add_argument("--codex-home", type=Path, default=Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")))
     parser.add_argument("--app-dir", type=Path, default=default_app_dir())
     parser.add_argument("--pinned-file", type=Path)
     parser.add_argument(
@@ -34,7 +35,7 @@ def common_parser(parser: argparse.ArgumentParser) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Codex 会话生命周期管理器 / Codex session lifecycle manager")
+    parser = argparse.ArgumentParser(description="Codex-Session-Manager: 本地会话搜索、阅读与整理")
     sub = parser.add_subparsers(dest="command", required=True)
     scan = sub.add_parser("scan", help="Build a read-only session catalog")
     common_parser(scan)

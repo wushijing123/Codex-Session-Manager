@@ -84,6 +84,8 @@ def check_python(path: Path) -> tuple[bool, str]:
 def project_checks() -> list[Check]:
     checks: list[Check] = []
     for relative in REQUIRED:
+        if relative.startswith(".github/") and not (ROOT / ".git").exists():
+            continue  # Runtime ZIPs do not include GitHub development workflows.
         path = ROOT / relative
         add(checks, path.is_file() and path.stat().st_size > 0, f"file:{relative}", str(path))
 

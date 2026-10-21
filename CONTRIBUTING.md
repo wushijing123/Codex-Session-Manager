@@ -16,7 +16,7 @@
 
 ```bash
 git clone <repository-url>
-cd wushijing-codex-session-manager
+cd Codex-Session-Manager
 python3 scripts/doctor.py --project-only
 python3 -m unittest discover -s tests -v
 ```

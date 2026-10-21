@@ -2,6 +2,20 @@
 
 [中文](FAQ.md) · [English](FAQ.en.md)
 
+## v0.7.0 session library
+
+- **Where are backups saved?** Open Settings in the header to choose a folder. Progress and Backups display the actual location. Existing backups stay in their original folders.
+- **How are files named?** `sessionID-randomID.zip`; titles and timestamps appear in Backups.
+- **How do I stop a backup?** Click Cancel backup. Completed ZIPs remain, unfinished files are removed. Closing the progress dialog keeps the task running.
+- **Can deleted chats be restored?** Confirmed native deletions with a verified copy enter Trash for 30 days. Restore never overwrites an existing session; permanent deletion removes that recovery copy. Manual backups are separate.
+- **Can I change the theme?** Settings offers B Warm reading (default), A Light minimal, and C Dark workspace, remembered per browser.
+- **Does it manage Claude Code chats?** No. Only local Codex sessions are currently supported.
+- **Does the rename move my data?** No. The Skill identifier and existing application data directory remain compatible.
+
+## Legacy v0.6 cold-storage FAQ
+
+The following describes the legacy cold-storage commands, not the v0.7.0 session library or ZIP restore flow.
+
 ## How is Codex archive different from cold storage?
 
 Codex archive removes a session from the everyday view while keeping its local log, so it normally does not reclaim space. Cold storage verifies the content and database snapshot, saves a recoverable package, and removes the session from the Codex index. It frees space on the Codex disk only when the destination is on another disk.

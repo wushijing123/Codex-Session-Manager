@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -45,6 +46,19 @@ class ReleaseMetadataTests(unittest.TestCase):
             first_hash = hashlib.sha256(first_archive.read_bytes()).hexdigest()
             second_hash = hashlib.sha256(second_archive.read_bytes()).hexdigest()
         self.assertEqual(first_hash, second_hash)
+
+    def test_extracted_skill_passes_project_checks(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            archive = package_release.build_archive(root)
+            with zipfile.ZipFile(archive) as bundle:
+                bundle.extractall(root / "unpacked")
+            skill = root / "unpacked" / package_release.SKILL_NAME
+            result = subprocess.run(
+                [sys.executable, str(skill / "scripts/doctor.py"), "--project-only"],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
 
 
 if __name__ == "__main__":

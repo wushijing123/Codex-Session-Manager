@@ -12,10 +12,16 @@ import re
 import sqlite3
 import tempfile
 import time
+import tomllib
+from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
+
+from .attachments import clean_image_text, extract_images
+from .transcript_io import open_log, iter_log_events, normalize_event
+
 
 UUID_RE = re.compile(
     r"(?P<id>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
@@ -149,13 +155,53 @@ def collect_log_files(codex_home: Path) -> dict[str, list[Path]]:
     for root in roots:
         if not root.is_dir():
             continue
-        for path in root.rglob("*.jsonl"):
+        for path in root.rglob("*.jsonl*"):
+            if not path.name.endswith((".jsonl", ".jsonl.zst")):
+                continue
             if path.is_symlink() or not path.is_file():
                 continue
             thread_id = session_id_from_path(path)
             if thread_id:
                 found.setdefault(thread_id, []).append(path.resolve())
     return found
+
+
+def rollout_head(path: Path) -> dict[str, Any]:
+    """Recover useful metadata for logs missing from the current SQLite index."""
+    metadata: dict[str, Any] = {}
+    try:
+        with open_log(path) as handle:
+            consumed = 0
+            while consumed < 128 * 1024:
+                line = handle.readline(128 * 1024)
+                if not line:
+                    break
+                consumed += len(line)
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                payload = event.get("payload") or {}
+                if not isinstance(payload, dict):
+                    continue
+                if event.get("type") == "session_meta":
+                    metadata.update({key: payload[key] for key in ("cwd", "source", "timestamp") if key in payload})
+                event = normalize_event(event)
+                payload = event.get("payload") or {}
+                if payload.get("type") == "user_message":
+                    text = _clean_preview_message(str(payload.get("message") or ""), "user")
+                    if text:
+                        metadata["first_user_message"] = text[:500]
+                        break
+                if event.get("type") == "response_item" and payload.get("role") == "user":
+                    metadata["first_user_message"] = _clean_preview_message(_content_text(payload.get("content")), "user")[:500]
+                    if metadata["first_user_message"]:
+                        break
+    except OSError:
+        pass
+    return metadata
 
 
 def collect_lifecycle_packages(app_dir: Path) -> dict[str, dict[str, Any]]:
@@ -269,13 +315,29 @@ def inspect_database(path: Path, log_ids: set[str]) -> DatabaseCandidate:
 
 
 def discover_database(codex_home: Path, log_ids: set[str]) -> tuple[list[DatabaseCandidate], str | None, bool]:
+    configured = None
+    try:
+        config = tomllib.loads((codex_home / "config.toml").read_text(encoding="utf-8"))
+        configured = config.get("sqlite_home")
+    except (OSError, ValueError):
+        pass
+    configured = configured or os.environ.get("CODEX_SQLITE_HOME")
+    explicit_root = Path(str(configured)).expanduser() if configured else None
+    if explicit_root and not explicit_root.is_absolute():
+        explicit_root = codex_home / explicit_root
+    roots = [codex_home, codex_home / "sqlite"]
+    if explicit_root:
+        roots.insert(0, explicit_root)
     candidates: list[Path] = []
-    for root in (codex_home, codex_home / "sqlite"):
-        if not root.is_dir():
-            continue
-        candidates.extend(path for path in root.glob("state_*.sqlite") if path.is_file() and not path.is_symlink())
+    for root in roots:
+        if root.is_dir():
+            candidates.extend(path for path in root.glob("state_*.sqlite") if path.is_file() and not path.is_symlink())
     inspected = [inspect_database(path, log_ids) for path in sorted(set(candidates))]
     valid = [item for item in inspected if not item.error]
+    if explicit_root:
+        explicit = [item for item in valid if Path(item.path).parent == explicit_root.resolve()]
+        if explicit:
+            valid = explicit
     valid.sort(
         key=lambda item: (
             item.max_updated_at,
@@ -339,7 +401,7 @@ def inspect_log_light(path: Path, max_bytes: int = 256 * 1024) -> dict[str, Any]
     }
     consumed = 0
     try:
-        with path.open("rb") as handle:
+        with open_log(path, "rb") as handle:
             for raw in handle:
                 consumed += len(raw)
                 if consumed > max_bytes:
@@ -351,6 +413,8 @@ def inspect_log_light(path: Path, max_bytes: int = 256 * 1024) -> dict[str, Any]
                     continue
                 event_type = event.get("type")
                 payload = event.get("payload", {})
+                if not isinstance(payload, dict):
+                    continue
                 if event_type == "event_msg" and payload.get("type") == "user_message":
                     stats["user_events"] += 1
                 if event_type != "response_item":
@@ -401,75 +465,71 @@ def inspect_conversation(path: Path, excerpt_chars: int = 12_000) -> dict[str, A
     write_signals = 0
     has_attachments = False
     try:
-        with path.open("r", encoding="utf-8", errors="replace") as handle:
-            for line in handle:
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                event_type = event.get("type")
-                payload = event.get("payload", {})
-                if not isinstance(payload, dict):
-                    continue
-                payload_type = payload.get("type")
-                if event_type == "event_msg":
-                    if payload_type == "task_started":
-                        current_turn = str(payload.get("turn_id") or "")
-                    elif payload_type == "user_message":
-                        text = str(payload.get("message") or "")
-                        turn_key = current_turn or hashlib.sha256(text.encode("utf-8")).hexdigest()
-                        if turn_key not in seen_user_turns:
-                            seen_user_turns.add(turn_key)
-                            event_users.append(text)
-                        has_attachments = has_attachments or bool(
-                            payload.get("images") or payload.get("local_images")
+        for event in iter_log_events(path):
+            event_type = event.get("type")
+            payload = event.get("payload", {})
+            if not isinstance(payload, dict):
+                continue
+            payload_type = payload.get("type")
+            current_turn = str(payload.get("turn_id") or current_turn)
+            if event_type == "event_msg":
+                if payload_type == "task_started":
+                    current_turn = str(payload.get("turn_id") or "")
+                elif payload_type == "user_message":
+                    text = str(payload.get("message") or "")
+                    turn_key = current_turn or hashlib.sha256(text.encode("utf-8")).hexdigest()
+                    if turn_key not in seen_user_turns:
+                        seen_user_turns.add(turn_key)
+                        event_users.append(text)
+                    has_attachments = has_attachments or bool(
+                        payload.get("images") or payload.get("local_images")
+                    )
+                elif payload_type == "agent_message" and payload.get("phase") in {None, "final", "final_answer"}:
+                    text = str(payload.get("message") or "")
+                    key = (current_turn, text)
+                    if text and key not in seen_assistant:
+                        seen_assistant.add(key)
+                        assistant_finals.append(text)
+                continue
+            if event_type != "response_item":
+                continue
+            if payload_type == "message":
+                role = payload.get("role")
+                text = _content_text(payload.get("content"))
+                if role == "user" and text:
+                    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+                    if digest not in seen_fallback_users:
+                        seen_fallback_users.add(digest)
+                        fallback_users.append(text)
+                    content = payload.get("content")
+                    if isinstance(content, list):
+                        has_attachments = has_attachments or any(
+                            isinstance(item, dict)
+                            and item.get("type") in {"input_image", "image", "local_image"}
+                            for item in content
                         )
-                    elif payload_type == "agent_message" and payload.get("phase") == "final_answer":
-                        text = str(payload.get("message") or "")
-                        key = (current_turn, text)
-                        if text and key not in seen_assistant:
-                            seen_assistant.add(key)
-                            assistant_finals.append(text)
-                    continue
-                if event_type != "response_item":
-                    continue
-                if payload_type == "message":
-                    role = payload.get("role")
-                    text = _content_text(payload.get("content"))
-                    if role == "user" and text:
-                        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
-                        if digest not in seen_fallback_users:
-                            seen_fallback_users.add(digest)
-                            fallback_users.append(text)
-                        content = payload.get("content")
-                        if isinstance(content, list):
-                            has_attachments = has_attachments or any(
-                                isinstance(item, dict)
-                                and item.get("type") in {"input_image", "image", "local_image"}
-                                for item in content
-                            )
-                    elif (
-                        role == "assistant"
-                        and payload.get("phase") in {"final", "final_answer"}
-                        and text
-                    ):
-                        key = (current_turn, text)
-                        if key not in seen_assistant:
-                            seen_assistant.add(key)
-                            assistant_finals.append(text)
-                    continue
-                if payload_type not in {"function_call", "custom_tool_call", "computer_tool_call"}:
-                    continue
-                tool_events += 1
-                name = str(payload.get("name") or "")
-                arguments = str(payload.get("arguments") or payload.get("input") or "")
-                mutating_name = (
-                    name == "apply_patch"
-                    or name.startswith(("create_", "update_", "delete_", "set_"))
-                    or name in {"write_stdin", "imagegen"}
-                )
-                if mutating_name or WRITE_TOOL_RE.search(arguments):
-                    write_signals += 1
+                elif (
+                    role == "assistant"
+                    and payload.get("phase") in {None, "final", "final_answer"}
+                    and text
+                ):
+                    key = (current_turn, text)
+                    if key not in seen_assistant:
+                        seen_assistant.add(key)
+                        assistant_finals.append(text)
+                continue
+            if payload_type not in {"function_call", "custom_tool_call", "computer_tool_call"}:
+                continue
+            tool_events += 1
+            name = str(payload.get("name") or "")
+            arguments = str(payload.get("arguments") or payload.get("input") or "")
+            mutating_name = (
+                name == "apply_patch"
+                or name.startswith(("create_", "update_", "delete_", "set_"))
+                or name in {"write_stdin", "imagegen"}
+            )
+            if mutating_name or WRITE_TOOL_RE.search(arguments):
+                write_signals += 1
     except OSError:
         return {"conversation_scanned": False, "read_error": True}
 
@@ -531,16 +591,21 @@ def _fallback_context_message(value: str) -> bool:
 def _clean_preview_message(value: str, role: str) -> str:
     cleaned = value
     if role == "user":
-        for tag in ("in-app-browser-context", "environment_context", "app-context"):
-            cleaned = re.sub(
-                rf"<{tag}\b[^>]*>.*?</{tag}>",
-                "",
-                cleaned,
-                flags=re.IGNORECASE | re.DOTALL,
-            )
-        request_marker = "## My request for Codex:"
-        if request_marker in cleaned:
-            cleaned = cleaned.rsplit(request_marker, 1)[-1]
+        # Host context can share one user-role record with the actual request.
+        # Strip only recognized leading wrappers, leaving quoted/code examples alone.
+        context = r"recommended_plugins|skills_instructions|in-app-browser-context|environment_context|app-context|permissions|developer"
+        patterns = (
+            rf"^\s*<({context})\b[^>]*>.*?</\1>\s*",
+            r"^\s*# AGENTS\.md instructions(?: for [^\n]+)?\s*\n\s*<INSTRUCTIONS>.*?</INSTRUCTIONS>\s*",
+            r"^\s*<skill>\s*<name>[^<]+</name>\s*<path>[^<]+</path>.*?</skill>\s*",
+        )
+        while True:
+            previous = cleaned
+            for pattern in patterns:
+                cleaned = re.sub(pattern, "", cleaned, count=1, flags=re.IGNORECASE | re.DOTALL)
+            if cleaned == previous:
+                break
+        cleaned = re.sub(r"^\s*## My request(?: for Codex)?:\s*", "", cleaned, count=1)
     elif role == "assistant":
         cleaned = re.sub(
             r"<oai-mem-citation>.*?</oai-mem-citation>",
@@ -556,6 +621,8 @@ def conversation_preview(
     record: dict[str, Any] | None = None,
     max_messages: int = 24,
     max_chars: int = 80_000,
+    offset: int | None = None,
+    image_resolver: Callable[[dict], dict] | None = None,
 ) -> dict[str, Any]:
     """Return an inert user/final-assistant transcript preview and local summary."""
     max_messages = min(200, max(4, int(max_messages)))
@@ -578,15 +645,22 @@ def conversation_preview(
         turn_id: str,
         order: int,
         fallback: bool = False,
+        image_payload: dict | None = None,
     ) -> None:
-        clean = redact(_clean_preview_message(text, role)).strip()
-        if not clean or (fallback and role == "user" and _fallback_context_message(clean)):
+        nonlocal has_attachments
+        cleaned_context = _clean_preview_message(text, role)
+        if text.strip() and not cleaned_context:
             return
-        key = (
-            (role, hashlib.sha256(clean.encode("utf-8")).hexdigest())
-            if fallback
-            else (role, turn_id, hashlib.sha256(clean.encode("utf-8")).hexdigest())
-        )
+        text = cleaned_context
+        images = extract_images(text, image_payload or {})
+        has_attachments = has_attachments or bool(images)
+        if images:
+            text = clean_image_text(text)
+        clean = redact(text).strip()
+        if (not clean and not images) or (fallback and role == "user" and _fallback_context_message(clean)):
+            return
+        identity = clean + ''.join(hashlib.sha256(image["source"].encode()).hexdigest() for image in images)
+        key = (role, turn_id or (str(order) if fallback else ""), hashlib.sha256(identity.encode("utf-8")).hexdigest())
         if key in seen:
             return
         seen.add(key)
@@ -598,93 +672,93 @@ def conversation_preview(
                 "timestamp": str(timestamp or ""),
                 "turn_id": turn_id,
                 "order": order,
+                "_images": images,
             }
         )
 
     try:
-        with path.open("r", encoding="utf-8", errors="replace") as handle:
-            for order, line in enumerate(handle):
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                event_type = event.get("type")
-                payload = event.get("payload", {})
-                if not isinstance(payload, dict):
-                    continue
-                payload_type = payload.get("type")
-                if event_type == "turn_context":
+        for order, event in enumerate(iter_log_events(path)):
+            event_type = event.get("type")
+            payload = event.get("payload", {})
+            if not isinstance(payload, dict):
+                continue
+            payload_type = payload.get("type")
+            current_turn = str(payload.get("turn_id") or current_turn)
+            if event_type == "turn_context":
+                current_turn = str(payload.get("turn_id") or current_turn)
+                continue
+            if event_type == "event_msg":
+                if payload_type == "task_started":
                     current_turn = str(payload.get("turn_id") or current_turn)
-                    continue
-                if event_type == "event_msg":
-                    if payload_type == "task_started":
-                        current_turn = str(payload.get("turn_id") or current_turn)
-                    elif payload_type == "user_message":
-                        append_message(
-                            event_messages,
-                            seen_event,
-                            "user",
-                            str(payload.get("message") or ""),
-                            event.get("timestamp"),
-                            current_turn,
-                            order,
-                        )
-                        has_attachments = has_attachments or bool(
-                            payload.get("images") or payload.get("local_images")
-                        )
-                    elif payload_type == "agent_message" and payload.get("phase") == "final_answer":
-                        append_message(
-                            event_messages,
-                            seen_event,
-                            "assistant",
-                            str(payload.get("message") or ""),
-                            event.get("timestamp"),
-                            current_turn,
-                            order,
-                        )
-                    continue
-                if event_type != "response_item":
-                    continue
-                if payload_type == "message":
-                    role = str(payload.get("role") or "")
-                    text = _content_text(payload.get("content"))
-                    if role in {"user", "assistant"} and (
-                        role == "user"
-                        or payload.get("phase") in {"final", "final_answer"}
-                    ):
-                        append_message(
-                            fallback_messages,
-                            seen_fallback,
-                            role,
-                            text,
-                            event.get("timestamp"),
-                            current_turn,
-                            order,
-                            fallback=True,
-                        )
-                    if role == "user" and isinstance(payload.get("content"), list):
-                        has_attachments = has_attachments or any(
-                            isinstance(item, dict)
-                            and item.get("type") in {"input_image", "image", "local_image"}
-                            for item in payload["content"]
-                        )
-                    continue
-                if payload_type not in {
-                    "function_call",
-                    "custom_tool_call",
-                    "computer_tool_call",
-                }:
-                    continue
-                tool_events += 1
-                name = str(payload.get("name") or "")
-                arguments = str(payload.get("arguments") or payload.get("input") or "")
-                mutating_name = (
-                    name == "apply_patch"
-                    or name.startswith(("create_", "update_", "delete_", "set_"))
-                    or name in {"write_stdin", "imagegen"}
-                )
-                if mutating_name or WRITE_TOOL_RE.search(arguments):
-                    write_signals += 1
+                elif payload_type == "user_message":
+                    append_message(
+                        event_messages,
+                        seen_event,
+                        "user",
+                        str(payload.get("message") or ""),
+                        event.get("timestamp"),
+                        current_turn,
+                        order,
+                        image_payload=payload,
+                    )
+                    has_attachments = has_attachments or bool(
+                        payload.get("images") or payload.get("local_images")
+                    )
+                elif payload_type == "agent_message" and payload.get("phase") in {None, "final", "final_answer"}:
+                    append_message(
+                        event_messages,
+                        seen_event,
+                        "assistant",
+                        str(payload.get("message") or ""),
+                        event.get("timestamp"),
+                        current_turn,
+                        order,
+                        image_payload=payload,
+                    )
+                continue
+            if event_type != "response_item":
+                continue
+            if payload_type == "message":
+                role = str(payload.get("role") or "")
+                text = _content_text(payload.get("content"))
+                if role in {"user", "assistant"} and (
+                    role == "user"
+                    or payload.get("phase") in {None, "final", "final_answer"}
+                ):
+                    append_message(
+                        fallback_messages,
+                        seen_fallback,
+                        role,
+                        text,
+                        event.get("timestamp"),
+                        current_turn,
+                        order,
+                        fallback=True,
+                        image_payload=payload,
+                    )
+                if role == "user" and isinstance(payload.get("content"), list):
+                    has_attachments = has_attachments or any(
+                        isinstance(item, dict)
+                        and item.get("type") in {"input_image", "image", "local_image"}
+                        for item in payload["content"]
+                    )
+                continue
+            if payload_type not in {
+                "function_call",
+                "custom_tool_call",
+                "computer_tool_call",
+            }:
+                continue
+            tool_events += 1
+            name = str(payload.get("name") or "")
+            arguments = str(payload.get("arguments") or payload.get("input") or "")
+            mutating_name = (
+                name == "apply_patch"
+                or name.startswith(("create_", "update_", "delete_", "set_"))
+                or name in {"write_stdin", "imagegen"}
+            )
+            if mutating_name or WRITE_TOOL_RE.search(arguments):
+                write_signals += 1
     except OSError:
         return {
             "available": False,
@@ -695,15 +769,32 @@ def conversation_preview(
         }
 
     messages = list(event_messages)
-    event_roles = {item["role"] for item in event_messages}
+    event_keys = Counter((item["role"], item["turn_id"], item["text"]) for item in event_messages)
+    matched_events = {}
+    for item in event_messages:
+        matched_events.setdefault((item["role"], item["turn_id"], item["text"]), []).append(item)
     for item in fallback_messages:
-        if item["role"] not in event_roles:
+        key = (item["role"], item["turn_id"], item["text"])
+        if event_keys[key]:
+            event_keys[key] -= 1
+            target = matched_events[key].pop(0)
+            # Canonical events often keep only local paths; response items retain
+            # the original embedded image, including after temporary files vanish.
+            if any(image["source"].lower().startswith("data:image/") for image in item["_images"]):
+                target["_images"] = item["_images"]
+            elif not target["_images"]:
+                target["_images"] = item["_images"]
+        else:
             messages.append(item)
     messages.sort(key=lambda item: item["order"])
     user_messages = [item for item in messages if item["role"] == "user"]
     assistant_messages = [item for item in messages if item["role"] == "assistant"]
 
-    if len(messages) <= max_messages:
+    if offset is not None:
+        offset = max(0, int(offset))
+        selected = messages[offset:offset + max_messages]
+        omitted = 0
+    elif len(messages) <= max_messages:
         selected = list(messages)
         omitted = 0
     else:
@@ -736,7 +827,10 @@ def conversation_preview(
             content_truncated = True
         if item["role"] != "omitted":
             remaining -= min(len(str(item["text"])), max(remaining, 0))
-        bounded.append({**item, "text": text})
+        published = {key: value for key, value in item.items() if key != "_images"}
+        if image_resolver:
+            published["images"] = [image_resolver(reference) for reference in item.get("_images", [])]
+        bounded.append({**published, "text": text})
 
     first_user = user_messages[0]["text"] if user_messages else ""
     last_assistant = assistant_messages[-1]["text"] if assistant_messages else ""
@@ -787,6 +881,7 @@ def conversation_preview(
         "signals": signals,
         "messages": bounded,
         "total_messages": len(messages),
+        "next_offset": (offset + len(selected)) if offset is not None and offset + len(selected) < len(messages) else None,
         "shown_messages": sum(1 for item in bounded if item["role"] != "omitted"),
         "omitted_messages": omitted,
         "content_truncated": content_truncated
@@ -809,7 +904,6 @@ def search_conversation_text(
     if len(query) < 2:
         raise ValueError("content_search_query_too_short")
     needle = query.casefold()
-    raw_needle = needle.encode("utf-8")
     max_matches = min(5, max(1, int(max_matches)))
     found: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
@@ -832,58 +926,35 @@ def search_conversation_text(
             excerpt += "…"
         found.append({"role": role, "excerpt": excerpt[:420]})
 
-    # Most Codex JSONL logs retain UTF-8 text. This fast byte gate avoids JSON
-    # parsing gigabytes of unrelated conversations for one keyword search.
     try:
-        overlap = b""
-        has_raw_match = False
-        with path.open("rb") as handle:
-            while block := handle.read(1024 * 1024):
-                if raw_needle in (overlap + block).lower():
-                    has_raw_match = True
-                    break
-                overlap = block[-max(0, len(raw_needle) - 1) :]
-        if not has_raw_match:
-            return []
-    except OSError:
-        return []
-
-    try:
-        with path.open("r", encoding="utf-8", errors="replace") as handle:
-            for line in handle:
-                if raw_needle not in line.casefold().encode("utf-8"):
-                    continue
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                payload = event.get("payload", {})
-                if not isinstance(payload, dict):
-                    continue
-                if event.get("type") == "event_msg":
-                    if payload.get("type") == "user_message":
-                        add("user", str(payload.get("message") or ""))
-                    elif (
-                        payload.get("type") == "agent_message"
-                        and payload.get("phase") == "final_answer"
-                    ):
-                        add("assistant", str(payload.get("message") or ""))
-                elif event.get("type") == "response_item" and payload.get("type") == "message":
-                    role = str(payload.get("role") or "")
-                    if role == "user" or (
-                        role == "assistant"
-                        and payload.get("phase") in {"final", "final_answer"}
-                    ):
-                        add(role, _content_text(payload.get("content")))
+        for event in iter_log_events(path, query=query):
+            payload = event.get("payload", {})
+            if not isinstance(payload, dict):
+                continue
+            if event.get("type") == "event_msg":
+                if payload.get("type") == "user_message":
+                    add("user", str(payload.get("message") or ""))
                 elif (
-                    event.get("type") == "response_item"
-                    and payload.get("type") == "custom_tool_call_output"
+                    payload.get("type") == "agent_message"
+                    and payload.get("phase") in {None, "final", "final_answer"}
                 ):
-                    # Tool output can contain a generated document or a search result.
-                    # It is searchable as an artifact, but tool calls/arguments never are.
-                    add("artifact", _content_text(payload.get("output")))
-                if len(found) >= max_matches:
-                    break
+                    add("assistant", str(payload.get("message") or ""))
+            elif event.get("type") == "response_item" and payload.get("type") == "message":
+                role = str(payload.get("role") or "")
+                if role == "user" or (
+                    role == "assistant"
+                    and payload.get("phase") in {None, "final", "final_answer"}
+                ):
+                    add(role, _content_text(payload.get("content")))
+            elif (
+                event.get("type") == "response_item"
+                and payload.get("type") == "custom_tool_call_output"
+            ):
+                # Tool output can contain a generated document or a search result.
+                # It is searchable as an artifact, but tool calls/arguments never are.
+                add("artifact", _content_text(payload.get("output")))
+            if len(found) >= max_matches:
+                break
     except OSError:
         return []
     return found
@@ -1202,6 +1273,12 @@ def scan_catalog(
                 "source",
                 "cwd",
                 "title",
+                "name",
+                "model_provider",
+                "is_pinned",
+                "history_mode",
+                "recency_at",
+                "recency_at_ms",
                 "tokens_used",
                 "has_user_event",
                 "archived",
@@ -1219,6 +1296,8 @@ def scan_catalog(
             indexed_ids.add(thread_id)
             candidates_for_id = logs.get(thread_id, [])
             db_path = Path(str(item.get("rollout_path") or "")).expanduser()
+            if not db_path.is_file() and Path(str(db_path) + ".zst").is_file():
+                db_path = Path(str(db_path) + ".zst")
             existing = db_path.resolve() if db_path.is_file() and not db_path.is_symlink() else None
             if not existing and candidates_for_id:
                 existing = max(candidates_for_id, key=lambda value: value.stat().st_mtime)
@@ -1237,7 +1316,7 @@ def scan_catalog(
             record = {
                 **item,
                 "id": thread_id,
-                "title": redact(item.get("title", ""), codex_home.parent),
+                "title": redact(item.get("name") or item.get("title", ""), codex_home.parent),
                 "first_user_message": redact(item.get("first_user_message", ""), codex_home.parent),
                 "cwd": redact(item.get("cwd", ""), codex_home.parent),
                 "rollout_path": redact(existing or item.get("rollout_path", ""), codex_home.parent),
@@ -1245,11 +1324,11 @@ def scan_catalog(
                 "size_bytes": stat.st_size if stat else 0,
                 "mtime": int(stat.st_mtime) if stat else 0,
                 "mtime_ns": stat.st_mtime_ns if stat else 0,
-                "pinned": thread_id in pinned,
+                "pinned": thread_id in pinned or bool(item.get("is_pinned")),
                 "pin_status": "pinned" if thread_id in pinned else pin_status,
                 "permanent_protection": thread_id in protected,
                 "relation_count": relation_counts.get(thread_id, 0),
-                "state_conflict": path_conflict or len(candidates_for_id) > 1 or thread_id in packages,
+                "state_conflict": path_conflict or len({str(p).removesuffix(".zst") for p in candidates_for_id}) > 1 or thread_id in packages,
                 "planned_action": plans.get(thread_id),
                 "write_signals": 0,
             }
@@ -1268,13 +1347,14 @@ def scan_catalog(
     for thread_id, paths in logs.items():
         if thread_id in indexed_ids:
             continue
-        for path in paths:
+        for path in [max(paths, key=lambda value: (value.stat().st_mtime, value.suffix == ".jsonl"))]:
             stat = path.stat()
+            head = rollout_head(path)
             record = {
                 "id": thread_id,
-                "title": f"未索引日志 {thread_id[:8]}",
-                "first_user_message": "",
-                "cwd": "",
+                "title": redact(head.get("first_user_message") or f"未索引日志 {thread_id[:8]}", codex_home.parent),
+                "first_user_message": redact(head.get("first_user_message", ""), codex_home.parent),
+                "cwd": redact(head.get("cwd", ""), codex_home.parent),
                 "rollout_path": redact(path, codex_home.parent),
                 "created_at": int(stat.st_ctime),
                 "updated_at": int(stat.st_mtime),
@@ -1289,7 +1369,7 @@ def scan_catalog(
                 "pin_status": pin_status,
                 "permanent_protection": thread_id in protected,
                 "relation_count": 0,
-                "state_conflict": len(paths) > 1 or thread_id in packages,
+                "state_conflict": len({str(p).removesuffix(".zst") for p in paths}) > 1 or thread_id in packages,
                 "planned_action": plans.get(thread_id),
                 "write_signals": 0,
             }

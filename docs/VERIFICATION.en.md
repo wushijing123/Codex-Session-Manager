@@ -2,6 +2,12 @@
 
 This file records the checks used to validate the public-release documentation and entry commands for this repository.
 
+## v0.7.0 (2026-10-21)
+
+Local checks: 113 unit tests passed, project Doctor passed, and both dashboard JavaScript files passed syntax validation. Desktop and 375px browser checks covered themes, language switching, theme persistence and cross-page selection. Backup cancellation and location selection were checked with fictional data; existing real session data was not used for destructive testing. The release package uses `Codex-Session-Manager-v0.7.0.zip` with the compatible Skill root inside.
+
+The evidence below refers to the historical v0.6.0 release and legacy cold restore, not the current ZIP restore contract. GitHub CI results are tracked separately by commit.
+
 ## Verified
 
 | Command | Result | Notes |

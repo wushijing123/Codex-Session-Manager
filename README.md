@@ -1,241 +1,91 @@
-# Codex 会话生命周期管理器
+# Codex-Session-Manager
 
 [中文](README.md) · [English](README.en.md)
 
-[![CI](https://github.com/wushijing123/wushijing-codex-session-manager/actions/workflows/ci.yml/badge.svg)](https://github.com/wushijing123/wushijing-codex-session-manager/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/wushijing123/wushijing-codex-session-manager)](https://github.com/wushijing123/wushijing-codex-session-manager/releases)
+一个在本机搜索、阅读和整理 Codex 历史会话的工具。MIT License。
 
-一个本地优先、安全分层、可视化的 Codex 会话生命周期管理 Skill。它帮助你看清会话现状、整理历史归档、释放空间，并在任何真实移动或删除发生前提供明确的保护检查和确认链路。
+当前版本：`0.7.0`。
 
-> 当前版本：`0.6.0`。默认界面为中文，可在右上角切换 English。公开发行版采用 MIT License，欢迎社区协作，但所有动作边界仍以本地验证结果为准。
+使用会话列表和聊天阅读双栏。搜索旧对话、回到 Codex 继续聊，或直接归档、备份和删除。
 
-核心承诺：在本地找到并安全迁移 Codex 会话，保留可校验恢复路径，不上传任何聊天数据。
+## 功能
 
-[五分钟演示](#五分钟演示) · [五分钟安装](#五分钟安装) · [常见问题](docs/FAQ.md) · [验证证据](docs/VERIFICATION.md) · [安全边界](#安全边界)
-
-![使用完全虚构数据运行的首页](assets/demo/dashboard-home.jpg)
-
-## 为什么做这个项目
-
-Codex 越好用，Session 就越容易失控。
-
-刚开始只有几个对话，后来会慢慢变成几百个：正式项目、临时测试、失败尝试、自动化任务、子任务和重要结论全部混在一起。它们不只让侧边栏越来越乱，还会持续占用本地磁盘；而点击“归档”通常只是把对话从常用视图里收起来，并不等于释放空间或建立了真正的保留策略。
-
-### 你可能也遇到过这些问题
-
-| 真实场景 | 用户痛点 |
+| 需要做什么 | 操作 |
 | --- | --- |
-| Session 越积越多 | 日志、工具结果和附件可能增长到数百个、数 GB，却没有统一的空间视图 |
-| 当时明明聊过，后来找不到 | 对话归档后离开常用侧边栏；只记得内容、不记得标题时尤其难找 |
-| “归档”被误认为“清理” | 界面看起来干净了，但本地文件仍然存在，磁盘空间并没有真正释放 |
-| 临时对话与重要项目混在一起 | 一次性测试、失败尝试、长期项目和关键结论缺少清晰分类 |
-| 想清理，却不敢删除 | 不知道哪些正在使用、已经置顶、包含重要结论，或与父子任务存在依赖 |
-| 侧边栏与本地文件对不上 | 数据库索引、普通日志、归档日志和 App 状态可能不一致，部分记录甚至不会出现在侧边栏 |
-| 想把旧项目移到外置盘 | 需要释放系统盘空间，同时希望以后还能校验并恢复，而不是简单移动文件后听天由命 |
-| 几百个 Session 只能逐个处理 | 缺少批量盘点、统一保留规则和可解释的整理建议 |
-| 删除之后无法证明发生了什么 | 缺少隔离期、恢复入口、操作清单、哈希校验和审计记录 |
-| 会话中包含私有内容 | 源码、客户资料、业务思路和账号信息不适合上传到第三方清理服务 |
+| 找旧 session | 输入关键词筛选标题、项目或 ID；按 Enter 搜索聊天正文 |
+| 看历史聊天 | 默认过滤自动注入的插件、配置及 Skill 上下文，点击会话阅读真实用户消息和 Codex 回复，Markdown 表格、代码、列表正常排版，支持本地／日志内嵌图片预览及点击查看原图；长会话分段加载，兼容压缩日志及新版消息格式 |
+| 继续聊 | 点击“在 Codex 打开”，跳到原会话 |
+| 归档 | 直接通过官方接口归档，也可取消归档 |
+| 备份 | 保存原始 JSONL、校验哈希和会话数据库行，下载本地 ZIP，在备份记录中恢复 |
+| 删除 | 校验恢复副本后调用官方删除，成功后进入回收站保留 30 天，无确认单和二次弹窗 |
+| 回收站 | 单条恢复、勾选及全选永久删除；启动、刷新或打开回收站时清理到期副本 |
+| 看整理建议 | 筛选“建议整理”，查看建议归档／删除的理由 |
 
-归根结底，用户要的不是一个“批量删除工具”，而是四个简单答案：
+列表支持项目与闲置时间筛选，每页 50 条，显示条目范围与总数，可上一页／下一页及页码跳转，跨页保留勾选。勾选列表左侧复选框，或全选当前筛选结果，即可批量归档、取消归档、备份和删除；后台显示进度和逐项结果，删除自动保留每条备份。
 
-1. **找得回**：即使忘了标题或已经归档，也能按真实内容重新找到
-2. **分得清**：知道哪些必须保留、哪些值得冷存档、哪些需要人工复核
-3. **腾得出**：看清空间去向，把旧内容安全迁移或隔离
-4. **删不错**：任何不可逆动作之前，都能看到依赖、风险、影响范围和恢复边界
+“建议整理”内可单选全部／未归档／已归档。选中后点击“按建议处理”，分别执行每条会话的归档或删除建议；先展示数量，删除自动备份。建议仅基于本地规则，不自动执行。当前会话、已知保护及关联任务不会成为删除候选。回收站副本在 30 天到期后清理；服务关闭期间会延后到下次启动或打开时清理。手动备份和旧版副本不自动过期。永久删除回收站副本后，不能再从回收站恢复。
 
-问题在于，Codex 会话真实分散在数据库、普通日志、归档日志、父子任务关系和置顶状态中。只看侧边栏无法可靠回答这些问题，直接操作文件又很容易留下索引错位、依赖断裂或误删。
+归档只改变日常会话展示，不等于释放磁盘空间。会话打开深链是 `codex://threads/SESSION_ID`，需要系统安装支持该协议的 Codex 应用。
 
-所以这个项目不把 Session 当成一堆待清理的文件，而是把它们当成有状态、有价值差异、需要安全退出机制的数字资产。它把底层复杂度留在后台，前台只保留四个入口：
+## 设置与外观
 
-1. **首页**：看生命周期、建议、空间、归档年龄与安全状态
-2. **会话**：检查唯一推荐方案，或按需查看单条真实聊天
-3. **执行计划**：核对影响范围，一次确认生成不可变执行单；永久删除才额外确认
-4. **设置**：调整闲置门槛、自动化保留数，并以系统窗口为主选择冷存档目录
+首页右上角“设置”可选择备份保存文件夹，支持系统选择器或完整路径；首次手动备份也会先选择目录。改位置不会移动旧文件。每份 ZIP 以 `会话ID-随机标识.zip` 命名，标题和时间在备份记录中查看。单条和批量备份显示真实进度并支持取消，保留已完成文件、清理未完成文件；关闭进度窗口则继续后台执行。
 
-## 核心能力
+提供 **B 暖白阅读（默认）／A 浅色极简／C 深色工作台** 三套主题，点击立即生效并记住本浏览器选择。
 
-| 能力 | 说明 |
-| --- | --- |
-| 本地只读盘点 | 扫描当前、归档、未索引和状态冲突会话，不上传数据 |
-| 可视化首页 | 生命周期、建议、空间、归档年龄、执行健康状态一屏呈现 |
-| 中英双语 | 默认中文，界面语言可切换并在本机持久化 |
-| 安全推荐 | 有价值的旧会话优先冷存档，低价值内容先隔离 14 天 |
-| 按需正文查看 | 只读取用户消息、Codex 最终回复和允许的工具产出 |
-| 官方取消归档 | 普通已归档会话可在详情中一键回到 Codex；以重新扫描后的真实状态为准，避免 CLI 假失败 |
-| 原生目录选择 | macOS 可直接选择外置硬盘目录、查看可用空间；取消选择不会改动设置 |
-| 语义复核包 | 对 3 轮以内短对话提取最少内容，交给 Codex 判断复用价值 |
-| 分层动作 | 永久保护、冷存档、14 天隔离、恢复和手动永久删除 |
-| 分级确认 | 可恢复动作一次确认后生成 manifest；永久删除额外确认，并由进程门复核 |
-| 审计报告 | 输出 JSON、Markdown 和 HTML，不提交真实数据到仓库 |
-| 工程化交付 | 安装器、Doctor、跨 macOS/Linux CI、标签发布和安装包 |
+![虚构数据演示](assets/demo/session-library-v0.7.0.png)
 
-### 四个动作，不再混淆
+当前只管理本地 Codex 会话。Claude Code 支持尚未实现；在 Claude Code 中安装此 Skill 不等于接入它的会话。
 
-| 动作 | 实际发生什么 | 是否释放空间 |
-| --- | --- | --- |
-| Codex 归档 | 从常用侧边栏移出，聊天仍保留在 Codex 本地目录 | 否 |
-| 锁定此会话 | 只是不参与本工具的整理计划，文件位置不变 | 否 |
-| 冷存档 | 校验后移出 Codex 索引并保存为可恢复包 | 只有目标在另一块磁盘时才释放原磁盘空间 |
-| 14 天隔离 | 移到本地隔离区，倒计时内仍可恢复 | 取决于隔离区所在磁盘 |
+## 安装与启动
 
-## 五分钟安装
-
-前置要求：Python 3.11+、已安装 Codex。Node.js 只在开发或本地语法检查时需要。
+需要 Python 3.11+、Git、Codex CLI 和已运行过的 Codex。
 
 ```bash
 mkdir -p ~/.agents/skills
-git clone https://github.com/wushijing123/wushijing-codex-session-manager.git \
+git clone https://github.com/wushijing123/Codex-Session-Manager.git \
   ~/.agents/skills/codex-session-lifecycle-manager
 cd ~/.agents/skills/codex-session-lifecycle-manager
-
 python3 scripts/install_skill.py
-python3 scripts/doctor.py
-```
-
-安装器只创建指向同一维护源的软链接，不覆盖已有目录。默认只安装 Codex 入口；需要所有可用入口时使用 `--targets all`。
-
-只安装部分入口：
-
-```bash
-python3 scripts/install_skill.py --targets codex workbuddy
-```
-
-完整说明见 [安装指南](docs/INSTALLATION.md)。
-
-## 启动看板
-
-```bash
 python3 scripts/session_manager.py dashboard
 ```
 
-服务只绑定 `127.0.0.1`。若不希望自动打开浏览器：
+已有安装直接在维护源目录更新。安装器创建软链接，不覆盖已有目录。
 
-```bash
-python3 scripts/session_manager.py dashboard --no-open
+在 Codex 中也可以说：
+
+```text
+使用 $codex-session-lifecycle-manager 打开会话库
 ```
 
-终端会输出带一次性启动令牌的本地地址。不要分享或记录该地址。
+服务只绑定 `127.0.0.1`。终端会打印带启动令牌的地址，请保持服务运行，不要分享该地址。默认中文，可切换 English。聊天数据不上传。
 
-直接从终端启动时可以盘点、搜索和制定计划；真实迁移或删除还需要由 Skill 同步一次最新置顶快照。这是执行门禁，不是页面故障。
-
-## 五分钟演示
-
-不想连接自己的 `~/.codex` 时，可直接启动一套完全虚构的本地 fixture：
+## 先试虚构数据
 
 ```bash
 python3 scripts/demo_dashboard.py --no-open
 ```
 
-它会打印一个本地 URL，并生成临时 `Codex home`、SQLite、JSONL、冷存档目录和隔离包。默认在进程退出后自动清理；若要保留现场排查，用 `--keep-fixture`。
+演示包含搜索关键词、历史对话、归档建议、删除建议和旧版包。默认使用临时目录，退出后清理，不读取真实会话。演示可以搜索、阅读和备份，归档／删除保持禁用。
 
-![虚构数据的执行计划页面](assets/demo/dashboard-plan.jpg)
+## 兼容性与边界
 
-## 常用命令
+- 支持的操作以本机 Codex 生成的协议 schema 为准。老 CLI 可能支持归档而不支持 `thread/delete`；页面会禁用删除并提示更新，不自行升级系统 CLI。
+- 归档、取消归档和删除调用官方接口，不直接修改 Codex 数据库。官方拒绝会话当前正在写入时，不强制操作。
+- 备份 ZIP 包含原始聊天与会话行，不包含凭证或完整数据库；支持下载和恢复。恢复先校验哈希与会话 ID，经官方接口重新识别，不覆盖现有会话；旧备份继续兼容。压缩备份恢复为普通 JSONL，保留原 ID、正文及归档状态；不承诺还原所有内部数据库字段或原始排序时间。
+- 对话每页 20 条，可加载超过 200 条。超长单条消息仍使用原解析器的文本上限。
+- 旧版冷存档、隔离数据仍可盘点，恢复使用旧命令；新版页面不提供冷存档、隔离或执行计划。
+- 支持 `.jsonl`、`.jsonl.zst`、新版 `item_completed` 以及混合历史；只在磁盘确实不存在日志时标为缺失。扫描遵循 `CODEX_HOME`、配置 `sqlite_home` 与 `CODEX_SQLITE_HOME`，同一会话的重复格式不重复计数。
+- 压缩阅读需要 Python 3.14 标准库、Python `zstandard` 包或系统 `zstd` 命令之一；例如 `python3 -m pip install zstandard`。使用流式解压，不生成聊天正文缓存。
+- 浏览器中验证了桌面与 375px 窄屏；系统深链能否打开取决于本机 Codex 安装。
 
-```bash
-# 只读扫描摘要
-python3 scripts/session_manager.py scan --pretty
-
-# 生成 JSON、Markdown 和 HTML 审计报告
-python3 scripts/session_manager.py report
-
-# 生成英文报告
-python3 scripts/session_manager.py report --lang en
-
-# 项目与安装诊断
-python3 scripts/doctor.py
-
-# 仅检查项目，不检查本机入口
-python3 scripts/doctor.py --project-only
-
-# 构建可安装 Skill 包
-python3 scripts/package_release.py --output-dir dist
-```
-
-更完整的操作链路见 [工作流说明](docs/WORKFLOWS.md)。
-
-## 生命周期模型
-
-```mermaid
-flowchart LR
-    A[使用中的会话] -->|Codex 官方归档| B[普通归档]
-    B -->|Codex 官方取消归档| A
-    B -->|保留内容并移出索引| C[冷存档]
-    B -->|可恢复清理| D[14 天隔离]
-    C -->|校验后| B
-    D -->|到期前| B
-    D -->|到期且再次确认| E[永久删除]
-    B -->|用户明确选择并双重确认| E
-```
-
-系统始终分开记录：
-
-- `actual_state`：真实状态
-- `recommendation`：系统建议
-- `planned_action`：用户计划
-
-计划永远不会被画成已经发生的事实。
-
-## 安全边界
-
-- 默认扫描只读；真实动作必须从计划进入确认链路
-- 当前活跃、真实置顶、永久保护、数据库歧义、状态冲突和父子依赖会阻断执行
-- 自动推荐不会生成永久删除计划
-- 永久删除必须由用户在详情中明确选择，并经过二次确认
-- 执行前重新校验数据库、日志哈希、置顶快照和 Codex 进程
-- 历史会话按不可信内容处理，从不执行其中的命令
-- 数据库、JSONL、隔离包、冷存档、manifest 和报告都被 `.gitignore` 排除
-- 冷存档包可以校验，但“恢复到 Codex”按钮在真实关闭应用的完整闭环验证通过前保持禁用
-
-完整威胁模型见 [安全策略](SECURITY.md)。
-
-## 项目结构
-
-```text
-.
-├── SKILL.md                  # Agent 运行入口
-├── agents/openai.yaml        # Skill UI 元数据
-├── assets/dashboard/         # 中英双语本地看板
-├── scripts/                  # 扫描、服务、动作、安装、诊断与打包
-├── references/               # 分类、安全、语义复核和 UI 规则
-├── docs/                     # 中英项目文档
-├── tests/                    # 合成数据与安全回归
-└── .github/                  # CI、发布、依赖更新与协作模板
-```
-
-架构与数据流见 [架构说明](docs/ARCHITECTURE.md)。
-
-## 开发与验证
+## 开发检查
 
 ```bash
+python3 -m unittest discover -s tests -q
 python3 scripts/doctor.py --project-only
-python3 -m unittest discover -s tests -v
-node --check assets/dashboard/i18n.js
 node --check assets/dashboard/app.js
+node --check assets/dashboard/i18n.js
 ```
 
-CI 会在 macOS、Linux 与 Python 3.11/3.13 上验证项目，并生成可下载的 Skill 包。带 `v*` 的标签会触发 Release 工作流。
-
-参与修改前请读 [贡献指南](CONTRIBUTING.md)。
-
-## 文档导航
-
-- [安装指南](docs/INSTALLATION.md)
-- [用户与发布工作流](docs/WORKFLOWS.md)
-- [架构与数据流](docs/ARCHITECTURE.md)
-- [常见问题](docs/FAQ.md)
-- [安全策略](SECURITY.md)
-- [贡献指南](CONTRIBUTING.md)
-- [版本记录](CHANGELOG.md)
-
-## 社区与发布
-
-- 许可证：MIT，见 [LICENSE](LICENSE)
-- 贡献指南：见 [贡献指南](CONTRIBUTING.md)
-- 行为准则：见 [行为准则](CODE_OF_CONDUCT.md)
-- 路线图：见 [路线图](ROADMAP.md)
-- 验证记录：见 [验证说明](docs/VERIFICATION.md)
-
-## 项目状态
-
-本项目是社区可用的本地优先 Skill，不代表 OpenAI 或官方 Codex 产品，也不提供云端会话同步。macOS 已完成真实“冷存档 → 退出 Codex → 恢复”闭环验证：Session ID、标题、聊天日志哈希、归档索引和原始时间字段保持一致。Linux 用于扫描、看板、报告与 CI 验证；重要会话仍应保留独立备份，永久删除的实机全流程尚未验证。
+更多信息：[安装](docs/INSTALLATION.md)、[变更记录](CHANGELOG.md)、[安全说明](SECURITY.md)。`docs/WORKFLOWS.md` 和旧截图记录 0.6 版冷存档／隔离流程，供旧数据兼容维护参考。

@@ -14,12 +14,16 @@ import sys
 import threading
 import time
 import urllib.parse
+import zipfile
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+
+from .session_tools import SessionTools
+from .attachments import ImageStore
 
 from .core import (
     atomic_write,
@@ -108,12 +112,14 @@ class DashboardState:
         self.csrf_token = secrets.token_urlsafe(32)
         self.lock = threading.RLock()
         self.catalog: dict[str, Any] = {}
-        self.detail_cache: dict[tuple[str, int, int, int], dict[str, Any]] = {}
+        self.detail_cache: dict[tuple[str, int, int, int, int | None], dict[str, Any]] = {}
+        self.images = ImageStore()
         self.confirmation_sheets: dict[str, dict[str, Any]] = {}
         self.content_search_jobs: dict[str, dict[str, Any]] = {}
         self.persisted_execution_state = self.load_execution_state()
         self.refresh()
         self.restore_confirmation_sheet_from_state()
+        self.tools = SessionTools(self)
 
     @property
     def execution_state_path(self) -> Path:
@@ -593,7 +599,7 @@ class DashboardState:
             raise ValueError("official_unarchive_failed")
         raise ValueError("official_unarchive_not_verified")
 
-    def session_detail(self, session_id: str, max_messages: int = 24) -> dict[str, Any]:
+    def session_detail(self, session_id: str, max_messages: int = 24, offset: int | None = None) -> dict[str, Any]:
         max_messages = min(200, max(4, int(max_messages)))
         with self.lock:
             record = self.record_for(session_id)
@@ -629,13 +635,18 @@ class DashboardState:
                     "safety_note": "冷存档或隔离包需要先完成受控文件恢复，页面不会绕过生命周期边界读取。",
                 }
             stat = resolved.stat()
-            cache_key = (session_id, stat.st_size, stat.st_mtime_ns, max_messages)
+            cache_key = (session_id, stat.st_size, stat.st_mtime_ns, max_messages, offset)
             cached = self.detail_cache.get(cache_key)
-            if cached:
+            if cached and all(self.images.get(urllib.parse.parse_qs(urllib.parse.urlsplit(image["url"]).query)["token"][0])
+                              for message in cached.get("messages", []) for image in message.get("images", [])
+                              if image.get("status") == "available"):
                 return dict(cached)
+            budget = [32 * 1024 ** 2]
             detail = {
                 "session_id": session_id,
-                **conversation_preview(resolved, record, max_messages=max_messages),
+                **conversation_preview(resolved, record, max_messages=max_messages, offset=offset,
+                                       max_chars=240_000 if offset is not None else 80_000,
+                                       image_resolver=lambda reference: self.images.render(reference, str(record.get("cwd") or self.codex_home.parent), budget)),
             }
             self.detail_cache[cache_key] = detail
             while len(self.detail_cache) > 64:
@@ -654,12 +665,16 @@ class DashboardState:
         return self._search_archived_content(query, limit, records)
 
     def _search_archived_content(
-        self, query: str, limit: int, records: list[dict[str, Any]], job_id: str | None = None
+        self, query: str, limit: int, records: list[dict[str, Any]], job_id: str | None = None,
+        include_active: bool = False
     ) -> dict[str, Any]:
             matches: list[dict[str, Any]] = []
             scanned = 0
-            archived_root = (self.codex_home / "archived_sessions").resolve()
-            candidates = [item for item in records if item.get("actual_state") == "archived"]
+            allowed_roots = [(self.codex_home / "archived_sessions").resolve()]
+            if include_active:
+                allowed_roots.append((self.codex_home / "sessions").resolve())
+            candidates = [item for item in records if item.get("actual_state") in
+                          ({"active", "archived", "unindexed"} if include_active else {"archived"})]
             total = len(candidates)
             for record in candidates:
                 raw_path = str(record.get("rollout_path") or "")
@@ -676,7 +691,7 @@ class DashboardState:
                     candidate.is_symlink()
                     or not resolved.is_file()
                     or session_id_from_path(resolved) != record["id"]
-                    or archived_root not in resolved.parents
+                    or not any(root in resolved.parents for root in allowed_roots)
                 ):
                     continue
                 scanned += 1
@@ -706,7 +721,7 @@ class DashboardState:
                 "limited": len(matches) >= limit,
             }
 
-    def start_archived_content_search(self, query: str, limit: int = 100) -> dict[str, Any]:
+    def start_archived_content_search(self, query: str, limit: int = 100, include_active: bool = False) -> dict[str, Any]:
         query = " ".join(str(query).split())
         if len(query) < 2:
             raise ValueError("content_search_query_too_short")
@@ -719,13 +734,13 @@ class DashboardState:
             self.content_search_jobs[job_id] = {
                 "status": "running", "query": query,
                 "scanned": 0,
-                "total": sum(item.get("actual_state") == "archived" for item in records),
+                "total": sum(item.get("actual_state") in ({"active", "archived", "unindexed"} if include_active else {"archived"}) for item in records),
                 "matches": 0, "started_at": time.monotonic(),
             }
 
         def run() -> None:
             try:
-                result = self._search_archived_content(query, limit, records, job_id)
+                result = self._search_archived_content(query, limit, records, job_id, include_active)
                 with self.lock:
                     self.content_search_jobs[job_id].update({"status": "complete", "result": result})
             except Exception as error:
@@ -1863,6 +1878,53 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if not self.authorize():
             return
+        if parsed.path == "/api/session-image":
+            entry = self.state.images.get(query.get("token", [""])[0])
+            if not entry:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            mime, data = entry
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", mime)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        if parsed.path == "/api/trash":
+            self.send_json({"trash": self.state.tools.list_trash()})
+            return
+        if parsed.path == "/api/backups":
+            self.send_json({"backups": self.state.tools.list_backups(),
+                            "backup_location": self.state.tools.backup_location()})
+            return
+        if parsed.path == "/api/batch-status":
+            try:
+                self.send_json(self.state.tools.batch_status(query.get("job", [""])[0]))
+            except ValueError as error:
+                self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+        if parsed.path == "/api/library":
+            self.send_json({"csrf": self.state.csrf_token, "catalog": self.state.tools.catalog(),
+                            "capabilities": self.state.tools.capabilities(), "batch": self.state.tools.batch_status(),
+                            "backup_location": self.state.tools.backup_location()})
+            return
+        if parsed.path == "/api/backup-download":
+            name = query.get("file", [""])[0]
+            try:
+                path = self.state.tools.backup_path(name)
+            except ValueError:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Disposition", 'attachment; filename="session-backup.zip"')
+            self.send_header("Content-Length", str(path.stat().st_size))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            with path.open("rb") as source:
+                shutil.copyfileobj(source, self.wfile)
+            return
         if parsed.path == "/api/bootstrap":
             settings = read_json(self.state.app_dir / "settings.json", {})
             policy = classification_policy(settings)
@@ -1931,6 +1993,42 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if length > 256 * 1024:
                 raise ValueError("body_too_large")
             payload = json.loads(self.rfile.read(length) or b"{}")
+            if self.path == "/api/backup-location":
+                self.send_json({"backup_location": self.state.tools.set_backup_location(payload.get("directory"))})
+                return
+            if self.path == "/api/backup-choose-directory":
+                self.send_json(self.state.tools.choose_backup_directory())
+                return
+            if self.path == "/api/backup-cancel":
+                self.send_json(self.state.tools.cancel_backup(str(payload.get("job", ""))))
+                return
+            if self.path == "/api/trash-purge":
+                self.send_json(self.state.tools.purge_trash(payload.get("filenames")))
+                return
+            if self.path == "/api/trash-restore":
+                self.send_json(self.state.tools.restore_trash(str(payload.get("filename", ""))))
+                return
+            if self.path == "/api/batch-action":
+                self.send_json(self.state.tools.start_batch(payload.get("session_ids"), str(payload.get("action", ""))))
+                return
+            if self.path == "/api/restore-backup":
+                self.send_json(self.state.tools.restore_backup(str(payload.get("filename", ""))))
+                return
+            if self.path == "/api/session-action":
+                result = self.state.tools.action(str(payload["session_id"]).lower(), str(payload["action"]))
+                self.send_json({"ok": True, **result})
+                return
+            if self.path == "/api/library-refresh":
+                self.state.tools.cleanup_trash()
+                self.state.refresh()
+                self.state.tools._capabilities = None
+                self.send_json({"ok": True, "catalog": self.state.tools.catalog(), "capabilities": self.state.tools.capabilities()})
+                return
+            if self.path == "/api/search":
+                result = self.state.start_archived_content_search(
+                    str(payload.get("query", "")), 200, include_active=True)
+                self.send_json({"ok": True, **result})
+                return
             if self.path == "/api/plan":
                 result = self.state.save_plan(str(payload["session_id"]), payload.get("action"))
                 self.send_json(
@@ -2031,6 +2129,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 detail = self.state.session_detail(
                     str(payload["session_id"]).lower(),
                     int(payload.get("max_messages", 24)),
+                    max(0, int(payload["offset"])) if "offset" in payload else None,
                 )
                 self.send_json({"ok": True, "detail": detail})
                 return
@@ -2127,6 +2226,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_json({"error": "not_found"}, HTTPStatus.NOT_FOUND)
         except PermissionError as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.CONFLICT)
+        except zipfile.BadZipFile:
+            self.send_json({"error": "invalid_backup"}, HTTPStatus.BAD_REQUEST)
+        except (OSError, subprocess.SubprocessError) as exc:
+            self.send_json({"error": "local_operation_failed"}, HTTPStatus.BAD_REQUEST)
         except (KeyError, ValueError, json.JSONDecodeError) as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
 

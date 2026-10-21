@@ -23,7 +23,7 @@
 
 ```bash
 mkdir -p ~/.agents/skills
-git clone https://github.com/wushijing123/wushijing-codex-session-manager.git \
+git clone https://github.com/wushijing123/Codex-Session-Manager.git \
   ~/.agents/skills/codex-session-lifecycle-manager
 python3 ~/.agents/skills/codex-session-lifecycle-manager/scripts/install_skill.py
 ```
@@ -41,8 +41,8 @@ python3 ~/.agents/skills/codex-session-lifecycle-manager/scripts/doctor.py
 只想使用本地看板时，可以把仓库放在任意目录，不需要创建任何软链接：
 
 ```bash
-git clone https://github.com/wushijing123/wushijing-codex-session-manager.git
-cd wushijing-codex-session-manager
+git clone https://github.com/wushijing123/Codex-Session-Manager.git
+cd Codex-Session-Manager
 python3 scripts/doctor.py --project-only
 python3 scripts/session_manager.py dashboard
 ```
@@ -53,7 +53,7 @@ python3 scripts/session_manager.py dashboard
 python3 scripts/session_manager.py dashboard --no-open
 ```
 
-独立看板可用于盘点、搜索和规划。真实迁移或删除需要由 Skill 提供最新置顶快照，因此建议在 Codex 中执行相关动作。
+独立会话库支持搜索、阅读、备份与本机协议允许的操作；受保护、已知置顶、当前及关联会话会按规则跳过。安装到其他 Agent 仅增加 Skill 入口，不增加其他产品的会话数据源。
 
 ## 4. 可选：连接其他 Agent
 
@@ -121,7 +121,7 @@ python3 ~/.agents/skills/codex-session-lifecycle-manager/scripts/session_manager
 也可以在 Codex 中输入：
 
 ```text
-使用 $codex-session-lifecycle-manager 打开会话生命周期看板
+使用 $codex-session-lifecycle-manager 打开 Codex-Session-Manager
 ```
 
 ## 7. 更新

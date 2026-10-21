@@ -1,4 +1,4 @@
 interface:
-  display_name: "Codex Session Lifecycle Manager"
-  short_description: "Bilingual local inventory, confirmation, organization, and safe cleanup for Codex sessions"
-  default_prompt: "Use $codex-session-lifecycle-manager to scan Codex sessions read-only; open the Chinese dashboard by default and switch to English when needed. Conversation details show summaries and real chat previews, page actions only create plans, and permanent deletion requires explicit manual selection."
+  display_name: "Codex-Session-Manager"
+  short_description: "Search and read Codex chats; archive, back up and recover sessions"
+  default_prompt: "Use $codex-session-lifecycle-manager to open Codex-Session-Manager from its local server. Search and read old chats, reopen them in Codex, and apply only the actions I request. Use Settings for backup location and the three themes (B is default). Backups support progress and cancellation; verified deletions go to Trash for 30 days. Do not treat suggestions as permission to delete. Claude Code sessions are not supported yet."

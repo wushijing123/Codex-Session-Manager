@@ -16,6 +16,13 @@ INCLUDE = (
     "LICENSE",
     "README.md",
     "README.en.md",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "CONTRIBUTING.en.md",
+    "CODE_OF_CONDUCT.md",
+    "CODE_OF_CONDUCT.en.md",
+    "ROADMAP.md",
+    "ROADMAP.en.md",
     "SECURITY.md",
     "SECURITY.en.md",
     "agents",
@@ -45,7 +52,7 @@ def included_files() -> list[Path]:
 def build_archive(output_dir: Path) -> Path:
     version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
     output_dir.mkdir(parents=True, exist_ok=True)
-    archive = output_dir / f"{SKILL_NAME}-v{version}.zip"
+    archive = output_dir / f"Codex-Session-Manager-v{version}.zip"
     files = included_files()
     if [path for path in files if path.name == "SKILL.md"] != [ROOT / "SKILL.md"]:
         raise RuntimeError("release package must contain exactly one root SKILL.md")

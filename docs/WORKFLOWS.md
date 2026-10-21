@@ -1,5 +1,6 @@
 # 工作流说明
 
+> 本文记录 v0.6 旧版冷存档／隔离流程；v0.7.0 会话库请阅读 [README](../README.md)。
 [中文](WORKFLOWS.md) · [English](WORKFLOWS.en.md)
 
 ## 用户主流程

@@ -2,6 +2,12 @@
 
 [中文](ARCHITECTURE.md) · [English](ARCHITECTURE.en.md)
 
+## v0.7.0 architecture
+
+The current path is Dashboard → authenticated localhost API (`server.py`) → `SessionTools` (`session_tools.py`) → official Codex App Server. Read-only inventory stays in `core.py`; `transcript_io.py` reads plain/compressed logs, and `attachments.py` validates local/embedded images. Batch progress and backup cancellation are handled by the service. ZIP backups and Trash metadata remain separate from native session storage. Themes share one DOM and action layer and store browser preferences locally.
+
+The sections below document the retained v0.6 cold-storage/manifest tools, not the current home page workflow.
+
 ## Design goals
 
 1. Local first — no remote service and no session-content upload

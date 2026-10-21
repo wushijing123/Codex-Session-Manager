@@ -23,7 +23,7 @@ Clone it once and create the Codex entry point:
 
 ```bash
 mkdir -p ~/.agents/skills
-git clone https://github.com/wushijing123/wushijing-codex-session-manager.git \
+git clone https://github.com/wushijing123/Codex-Session-Manager.git \
   ~/.agents/skills/codex-session-lifecycle-manager
 python3 ~/.agents/skills/codex-session-lifecycle-manager/scripts/install_skill.py
 ```
@@ -41,8 +41,8 @@ python3 ~/.agents/skills/codex-session-lifecycle-manager/scripts/doctor.py
 For dashboard-only use, clone the repository anywhere. No symlinks are required:
 
 ```bash
-git clone https://github.com/wushijing123/wushijing-codex-session-manager.git
-cd wushijing-codex-session-manager
+git clone https://github.com/wushijing123/Codex-Session-Manager.git
+cd Codex-Session-Manager
 python3 scripts/doctor.py --project-only
 python3 scripts/session_manager.py dashboard
 ```
@@ -53,7 +53,7 @@ Prevent automatic browser opening:
 python3 scripts/session_manager.py dashboard --no-open
 ```
 
-The standalone dashboard supports inventory, search, and planning. Real migration or deletion needs a fresh pinned-session snapshot supplied through the Skill, so run those actions from Codex.
+The standalone library supports search, reading, backups, and operations available through the installed native protocol. Protected, known pinned, current and linked sessions are skipped. Installing the Skill in another agent adds an entry point, not another session data source.
 
 ## 4. Optional: connect other agents
 
@@ -121,7 +121,7 @@ python3 ~/.agents/skills/codex-session-lifecycle-manager/scripts/session_manager
 Or ask Codex:
 
 ```text
-Use $codex-session-lifecycle-manager to open the session lifecycle dashboard.
+Use $codex-session-lifecycle-manager to open Codex-Session-Manager.
 ```
 
 ## 7. Update

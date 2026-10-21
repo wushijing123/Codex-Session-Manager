@@ -2,218 +2,63 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Codex 会话生命周期</title>
-  <link rel="icon" href="data:,">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Codex-Session-Manager</title>
   <link rel="stylesheet" href="style.css">
+  <script src="i18n.js" defer></script>
+  <script src="assets/vendor/marked.umd.js" defer></script>
+  <script src="assets/vendor/purify.min.js" defer></script>
+  <script src="app.js" defer></script>
 </head>
 <body>
-  <a class="skip-link" href="#mainContent">跳到主要内容</a>
-  <header class="topbar">
-    <div class="brand">
-      <span class="mark" aria-hidden="true">C</span>
-      <div><strong>Codex 会话</strong><small>本机生命周期管理</small></div>
-    </div>
-    <nav id="mainTabs" class="tabs" aria-label="页面">
-      <button class="tab active" data-view="home" aria-current="page">首页</button>
-      <button class="tab" data-view="sessions">会话 <span id="autoCount">0</span></button>
-      <button class="tab" data-view="queue">执行计划 <span id="planCount">0</span></button>
-      <button class="tab" data-view="settings">设置</button>
-    </nav>
-    <div class="toolbar">
-      <span id="gateBadge" class="badge">读取中</span>
-      <button id="languageBtn" class="language-button secondary" aria-label="切换为英文">EN</button>
-      <button id="refreshBtn" class="secondary">刷新会话</button>
-    </div>
+  <a class="skip-link" href="#conversation" data-i18n>跳到聊天记录</a>
+  <header class="app-header">
+    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true">C</span><span>Codex<strong>-Session-Manager</strong></span></a>
+    <div class="header-actions"><span id="dataSource" class="local-label" data-i18n>仅在本机</span><button id="trashBtn" data-i18n>回收站</button><button id="backupsBtn" data-i18n>备份记录</button><button id="settingsBtn" aria-label="设置"><svg class="settings-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="m9 3-.6 2.2-2 .9-2.1-.6-2 3.5 1.5 1.7v2.6L2.3 15l2 3.5 2.1-.6 2 .9L9 21h4l.6-2.2 2-.9 2.1.6 2-3.5-1.5-1.7v-2.6L19.7 9l-2-3.5-2.1.6-2-.9L13 3Z"/><circle cx="11" cy="12" r="3"/></svg><span class="settings-label" data-i18n>设置</span></button><button id="refreshBtn" data-i18n>刷新</button><button id="languageBtn" aria-label="切换为英文">EN</button></div>
   </header>
-
-  <main id="mainContent" tabindex="-1">
-    <section id="view-home" class="view active">
-      <div class="page-head home-head">
-        <div><p class="eyebrow">SESSION HEALTH</p><h1>会话，一眼看懂</h1><p class="page-subtitle">只看现状、建议和下一步。安全校验留在后台。</p></div>
-        <p id="scanMeta" class="muted"></p>
-      </div>
-      <div id="warningPanel" class="notice hidden"></div>
-
-      <section class="home-hero" aria-labelledby="homeHeroTitle">
-        <div>
-          <p class="eyebrow">CURRENT SNAPSHOT</p>
-          <h2 id="homeHeroTitle"><strong id="homeTotal">0</strong> 条会话</h2>
-          <p id="homeHeroSummary" class="home-hero-copy">正在读取本机会话状态…</p>
-          <div class="hero-actions">
-            <button id="openSessionsBtn">查看整理建议</button>
-            <button id="openQueueBtn" class="secondary">查看执行计划</button>
-          </div>
-        </div>
-        <dl class="hero-facts">
-          <div><dt>日志占用</dt><dd id="homeStorage">0 B</dd></div>
-          <div><dt>可整理</dt><dd id="homeCandidates">0 条</dd></div>
-          <div><dt>已有计划</dt><dd id="homePlans">0 条</dd></div>
-        </dl>
-      </section>
-
-      <div id="metricGrid" class="metric-grid home-metrics"></div>
-
-      <div class="dashboard-grid">
-        <article class="panel lifecycle-panel">
-          <div class="panel-head"><div><p class="eyebrow">LIFECYCLE</p><h2>现在都在哪里</h2></div><span class="panel-note">真实状态</span></div>
-          <div class="donut-layout">
-            <div id="lifecycleDonut" class="donut" role="img" aria-label="会话生命周期分布"><div><strong id="donutTotal">0</strong><span>全部会话</span></div></div>
-            <div id="lifecycleLegend" class="chart-legend"></div>
-          </div>
-        </article>
-
-        <article class="panel recommendation-panel">
-          <div class="panel-head"><div><p class="eyebrow">RECOMMENDATION</p><h2>系统建议怎么处理</h2></div><span class="panel-note">仅建议</span></div>
-          <div id="recommendationChart" class="bar-chart"></div>
-        </article>
-
-        <article class="panel storage-panel">
-          <div class="panel-head"><div><p class="eyebrow">STORAGE</p><h2>空间花在哪里</h2></div><strong id="storageTotal">0 B</strong></div>
-          <div id="storageStack" class="storage-stack" role="img" aria-label="不同状态的日志空间占比"></div>
-          <div id="storageLegend" class="chart-legend compact"></div>
-        </article>
-
-        <article class="panel age-panel">
-          <div class="panel-head"><div><p class="eyebrow">ARCHIVE AGE</p><h2>归档多久了</h2></div><span class="panel-note">按更新时间</span></div>
-          <div id="ageChart" class="column-chart"></div>
-        </article>
-
-        <article class="panel safety-panel">
-          <div class="panel-head"><div><p class="eyebrow">SAFETY</p><h2>执行前健康检查</h2></div></div>
-          <dl id="integrityList" class="facts"></dl>
-        </article>
-
-        <article class="panel next-panel">
-          <p class="eyebrow">NEXT STEP</p>
-          <h2 id="nextActionTitle">下一步</h2>
-          <p id="nextActionText" class="muted"></p>
-          <button id="nextActionBtn">查看建议</button>
-        </article>
-      </div>
-    </section>
-
-    <section id="view-sessions" class="view">
-      <div class="page-head">
-        <div><p class="eyebrow">REVIEW & PLAN</p><h1>整理会话</h1><p class="page-subtitle">默认方案只有两种：有价值的冷存档，低价值的先隔离 14 天。</p></div>
-        <p id="resultCount" class="muted"></p>
-      </div>
-
-      <section class="panel smart-plan">
-        <div class="smart-plan-copy">
-          <p class="eyebrow">RECOMMENDED PLAN</p>
-          <h2 id="autoHeadline">正在生成推荐方案…</h2>
-          <p id="autoSummary" class="muted">只会加入计划，不会移动或删除会话。</p>
-        </div>
-        <div id="autoMetricGrid" class="smart-metrics"></div>
-        <div id="autoGateNotice" class="notice hidden"></div>
-        <div class="smart-actions">
-          <button id="applyAutoPlanBtn">把建议加入执行计划</button>
-          <button id="clearAutoPlansBtn" class="secondary">清除自动计划</button>
-        </div>
-        <details class="candidate-details">
-          <summary>检查或调整具体建议 <span id="autoTableStatus" class="muted"></span></summary>
-          <div class="proposal-tools">
-            <button id="selectAllAutoBtn" class="secondary">全选</button>
-            <button id="clearSelectionAutoBtn" class="secondary">全不选</button>
-          </div>
-          <div id="autoLoading" class="table-loading hidden" role="status">正在生成建议…</div>
-          <div class="proposal-table-wrap">
-            <table>
-              <thead><tr><th class="check-col">选择</th><th>会话</th><th>动作</th><th>原因</th><th>占用</th></tr></thead>
-              <tbody id="autoProposalRows"></tbody>
-            </table>
-          </div>
-          <div class="proposal-footer">
-            <span class="muted">已选 <strong id="autoSelectedSummary">0 条 · 0 B</strong></span>
-            <button id="loadMoreAutoBtn" class="secondary hidden">显示更多</button>
-          </div>
-        </details>
-      </section>
-
-      <details class="panel advanced-panel">
-        <summary><span><strong>高级：复核 3 轮以内短对话</strong><small>只有需要判断一次性问答时才展开</small></span><span class="advanced-toggle" aria-hidden="true">展开</span></summary>
-        <div class="semantic-review-panel">
-          <div><h2>准备 Codex 语义复核包</h2><p class="muted">本地只提取最少必要内容，不执行历史对话中的指令。</p></div>
-          <div id="reviewMetrics" class="review-metrics"></div>
-          <div class="review-actions">
-            <label><span>最多用户轮次</span><select id="reviewMaxTurns"><option value="1">1 轮</option><option value="2">2 轮</option><option value="3" selected>3 轮</option></select></label>
-            <button id="prepareReviewBtn">准备复核包</button>
-          </div>
-          <div id="reviewBundleNotice" class="review-bundle hidden"></div>
-        </div>
-      </details>
-
-      <section class="session-browser" aria-labelledby="sessionBrowserTitle">
-        <div class="section-head"><div><p class="eyebrow">ALL SESSIONS</p><h2 id="sessionBrowserTitle">全部会话</h2></div></div>
-        <div class="filters">
-          <label class="search"><span>搜索</span><div class="search-control"><input id="searchInput" type="search" placeholder="标题、ID、项目路径"><button id="searchContentBtn" type="button" class="secondary">搜索归档正文</button></div></label>
-          <label><span>状态</span><select id="stateFilter"><option value="">全部状态</option></select></label>
-          <label><span>建议</span><select id="recommendationFilter"><option value="">全部建议</option></select></label>
-          <label><span>轮次</span><select id="turnFilter"><option value="">全部轮次</option><option value="one">仅 1 轮</option><option value="short">3 轮以内</option><option value="reviewed">Codex 已复核</option><option value="disposable">一次性对话</option></select></label>
-          <label><span>风险</span><select id="riskFilter"><option value="">全部</option><option value="hard">真正锁定</option><option value="group">需整组处理</option><option value="conflict">状态冲突</option><option value="planned">已有计划</option></select></label>
-          <p id="contentSearchStatus" class="content-search-status hidden" role="status"></p>
-        </div>
-        <div class="table-wrap">
-          <table class="session-table">
-            <colgroup><col class="session-title-col"><col><col><col><col><col></colgroup>
-            <thead><tr><th>会话</th><th>现状</th><th>建议</th><th>更新时间</th><th>占用</th><th>计划</th></tr></thead>
-            <tbody id="sessionRows"></tbody>
-          </table>
-        </div>
-        <div class="list-footer"><span id="explorerTableStatus" class="muted"></span><button id="loadMoreExplorerBtn" class="secondary hidden">显示更多</button></div>
-      </section>
-    </section>
-
-    <section id="view-queue" class="view">
-      <div class="page-head"><div><p class="eyebrow">REVIEW & EXECUTE</p><h1>执行计划</h1><p class="page-subtitle">先核对，再确认。没有计划时，这里保持空白。</p></div></div>
-      <div id="capabilityNotice" class="notice"></div>
-      <div id="queueList" class="queue-list"></div>
-      <div id="confirmationSheet" class="hidden"></div>
-      <div id="manifestList" class="queue-list manifest-list"></div>
-      <div id="queueFooter" class="queue-footer">
-        <div><span class="muted">本次计划影响空间</span><strong id="plannedBytes">0 B</strong></div>
-        <div class="footer-actions"><button id="exportPlanBtn" class="secondary">导出计划</button><button id="prepareBtn">查看操作确认单</button></div>
-      </div>
-    </section>
-
-    <section id="view-settings" class="view">
-      <div class="page-head"><div><p class="eyebrow">LOCAL SETTINGS</p><h1>设置</h1><p class="page-subtitle">大多数情况下保持默认即可。</p></div></div>
-      <form id="settingsForm" class="settings-grid">
-        <label><span>归档闲置多久后建议整理</span><select name="cleanup_age_days"><option value="7">7 天</option><option value="14">14 天</option><option value="30">30 天（推荐）</option><option value="60">60 天</option><option value="90">90 天</option><option value="180">180 天</option><option value="365">365 天</option></select></label>
-        <label><span>每个自动化至少保留</span><select name="automation_keep_runs"><option value="1">1 次</option><option value="3">3 次（推荐）</option><option value="5">5 次</option><option value="10">10 次</option><option value="20">20 次</option></select></label>
-        <div class="settings-field">
-          <label for="coldStorageDir">冷存档目录</label>
-          <div class="path-picker-control">
-            <input id="coldStorageDir" name="cold_storage_dir" placeholder="尚未选择目录" readonly>
-            <button id="chooseColdStorageBtn" type="button">选择目录</button>
-            <button id="editColdStorageBtn" type="button" class="secondary">手动输入（高级）</button>
-          </div>
-          <small id="coldStorageStatus" class="field-status" role="status" aria-live="polite"></small>
-        </div>
-        <label><span>报告目录</span><input name="report_dir" placeholder="默认写入应用数据目录"></label>
-        <label><span>压缩</span><select name="compression"><option value="auto">自动</option><option value="zstd">必须使用 zstd</option><option value="none">不压缩</option></select></label>
-        <button type="submit">保存设置</button>
+  <main class="workspace">
+    <aside class="library" aria-label="会话列表">
+      <div class="library-controls">
+      <div class="library-heading"><h1 data-i18n>你的会话</h1><span id="totalCount" class="count">0</span></div>
+      <form id="searchForm" role="search">
+        <div class="search-field"><span class="search-icon" aria-hidden="true"></span><input id="searchInput" type="search" placeholder="搜索标题、项目或聊天内容" aria-label="搜索会话" autocomplete="off"><button type="submit" aria-label="搜索聊天正文">↵</button></div>
+        <p id="searchStatus" class="search-help" role="status" data-i18n>按 Enter 搜索聊天正文</p>
       </form>
-      <div class="panel settings-note"><h2>安全边界</h2><p>服务只绑定 127.0.0.1，不联网。真正移动或删除前，会再次检查数据库、置顶状态和 Codex 进程。</p></div>
-    </section>
-  </main>
+      <div id="filters" class="filters" role="group" aria-label="筛选会话">
+        <button data-filter="all" aria-pressed="true" data-i18n>全部</button><button data-filter="active" aria-pressed="false" data-i18n>未归档</button><button data-filter="archived" aria-pressed="false" data-i18n>已归档</button><button data-filter="suggested" aria-pressed="false" data-i18n>建议整理</button>
+      </div>
+      <fieldset id="suggestionState" class="suggestion-state" hidden><legend data-i18n>建议会话状态</legend><label><input type="radio" name="suggestionState" value="all" checked><span data-i18n>全部</span></label><label><input type="radio" name="suggestionState" value="active"><span data-i18n>未归档</span></label><label><input type="radio" name="suggestionState" value="archived"><span data-i18n>已归档</span></label></fieldset>
+      <div class="quick-filters"><select id="projectSelect" aria-label="按项目筛选"><option value="" data-i18n>全部项目</option></select><select id="ageSelect" aria-label="按闲置时间筛选"><option value="0" data-i18n>全部时间</option><option value="7" data-i18n>闲置 7 天以上</option><option value="30" data-i18n>闲置 30 天以上</option><option value="90" data-i18n>闲置 90 天以上</option></select></div>
+      <div class="list-toolbar"><span id="resultCount" role="status"></span><select id="sortSelect" aria-label="排序"><option value="recent" data-i18n>最近更新</option><option value="oldest" data-i18n>最早更新</option><option value="size" data-i18n>占用空间</option></select></div>
+      <div class="selection-toolbar"><label><input id="selectVisible" type="checkbox"><span data-i18n>选择本页</span></label><button id="selectFiltered" class="text-button" data-i18n>全选筛选结果</button></div>
 
-  <div id="drawerScrim" class="drawer-scrim" aria-hidden="true"></div>
-  <aside id="drawer" class="drawer" role="dialog" aria-modal="true" aria-labelledby="detailTitle" aria-hidden="true" inert>
-    <button id="closeDrawer" class="drawer-close secondary" aria-label="关闭会话详情">关闭</button>
-    <p class="eyebrow">SESSION DETAIL</p><h2 id="detailTitle"></h2><div id="detailBody"></div>
-  </aside>
-  <div id="finalConfirmScrim" class="confirm-scrim" aria-hidden="true"></div>
-  <section id="finalConfirmDialog" class="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="finalConfirmTitle" aria-hidden="true" inert>
-    <button id="closeFinalConfirm" class="dialog-close secondary" aria-label="关闭二次确认">关闭</button>
-    <p class="eyebrow">SECOND CONFIRMATION</p><h2 id="finalConfirmTitle">确认本次操作？</h2><p id="finalConfirmBody" class="muted"></p>
-    <div id="finalConfirmWarning" class="hidden"></div>
-    <label id="finalConfirmAcknowledgement" class="acknowledge hidden"><input id="finalConfirmAck" type="checkbox"><span id="finalConfirmAckText"></span></label>
-    <div class="dialog-actions"><button id="cancelFinalConfirm" class="secondary">返回检查</button><button id="commitFinalConfirm">确认并生成执行单</button></div>
-  </section>
-  <div id="toast" class="toast" role="status" aria-live="polite"></div>
-  <script src="i18n.js" defer></script>
-  <script src="app.js" defer></script>
+      </div>
+      <div id="libraryScroll" class="library-scroll">
+      <div id="batchTracker" class="batch-tracker" hidden><button id="cancelBackupInline" class="cancel-backup" hidden data-i18n>取消备份</button><button id="batchStatus" class="batch-status" hidden></button><progress id="batchInlineMeter" max="1" value="0" aria-label="批量处理进度"></progress></div>
+      <div id="sessionList" class="session-list" aria-label="搜索结果"><p class="empty-copy" data-i18n>正在读取会话…</p></div>
+      </div>
+      <nav id="pagination" class="pagination" aria-label="会话分页" hidden><button id="prevPage" data-i18n>上一页</button><select id="pageSelect" aria-label="跳转页码"></select><button id="nextPage" data-i18n>下一页</button></nav>
+      <footer class="library-footer"><span id="storageTotal"></span><span data-i18n>数据留在你的电脑</span></footer>
+    </aside>
+    <section id="conversation" class="reader" tabindex="-1" aria-label="聊天记录">
+      <div id="readerEmpty" class="reader-empty"><span class="empty-mark" aria-hidden="true">C</span><h2 data-i18n>让过去的对话接得上</h2><p data-i18n>搜索旧会话，查看记录，回到 Codex 继续。</p></div>
+      <div id="readerContent" class="reader-content" hidden>
+        <header class="reader-header"><div class="reader-heading-group"><div class="reader-title-row"><button id="backBtn" class="back-button" data-i18n>返回列表</button><span id="sessionState" class="state-tag"></span><span id="sessionDate" class="muted"></span></div><h2 id="sessionTitle"></h2><p id="sessionProject" class="project-path"></p></div>
+          <div class="session-actions"><a id="openCodex" class="button primary" data-i18n>在 Codex 打开 ↗</a><button id="archiveBtn" data-i18n>归档</button><button id="backupBtn" data-i18n>备份</button><button id="deleteBtn" class="danger" data-i18n>删除</button></div>
+          <p id="capabilityNote" class="capability-note" hidden></p>
+        </header>
+        <div id="suggestion" class="suggestion" hidden></div>
+        <div id="chatStatus" class="chat-status" role="status"></div>
+        <div id="messages" class="messages"></div>
+        <button id="loadMoreMessages" class="load-more" hidden data-i18n>继续加载聊天记录</button>
+      </div>
+    </section>
+      <div id="batchBar" class="batch-bar" hidden><div class="batch-heading"><strong id="selectionCount" role="status"></strong><button id="clearSelection" class="text-button" data-i18n>清空选择</button></div><p id="selectionScope" hidden></p><button id="applySuggestions" class="suggested-action" data-batch="suggested" hidden data-i18n>按建议处理</button><p id="suggestedSummary" hidden></p><div class="batch-actions"><button data-batch="archive" data-i18n>归档</button><button data-batch="unarchive" data-i18n>取消归档</button><button data-batch="backup" data-i18n>备份</button><button data-batch="delete" class="danger" data-i18n>删除</button></div><p id="batchHint" data-i18n>删除自动备份；受保护或关联会话会跳过。</p></div>
+  </main>
+  <dialog id="backupsDialog" class="backups-dialog" aria-labelledby="backupsTitle"><div class="backups-heading"><div><h2 id="backupsTitle" data-i18n>备份记录</h2><p data-i18n>备份保存在本机。恢复会取回原会话，不覆盖现有会话。</p></div><button id="closeBackups" aria-label="关闭备份记录">×</button></div><div class="backup-location-panel"><div><span data-i18n>手动备份保存位置</span><p id="backupLocationText" class="backup-path"></p></div><button id="changeBackupLocation" data-i18n>更改位置</button><p class="backup-location-note" data-i18n>更改位置只影响之后的手动备份，已有备份保留在原处。删除时的恢复副本仍由回收站管理。</p></div><div id="backupsList" class="backups-list"></div></dialog>
+  <dialog id="trashDialog" class="backups-dialog" aria-labelledby="trashTitle"><div class="backups-heading"><div><h2 id="trashTitle" data-i18n>回收站</h2><p data-i18n>删除的会话保留 30 天。永久删除会清除恢复副本，手动备份不受影响。</p></div><button id="closeTrash" aria-label="关闭回收站">×</button></div><div class="trash-toolbar"><label><input id="trashSelectAll" type="checkbox"><span data-i18n>全选</span></label><span id="trashSelectedCount" role="status"></span><button id="purgeTrashSelected" class="danger" data-i18n>永久删除所选</button></div><p id="trashStatus" class="trash-status" role="status"></p><progress id="trashMeter" class="trash-meter" max="1" aria-label="回收站处理进度" hidden></progress><div id="trashList" class="backups-list"></div></dialog>
+  <dialog id="batchDialog" class="backups-dialog batch-dialog" aria-labelledby="batchTitle"><div class="backups-heading"><div class="batch-overview"><h2 id="batchTitle" data-i18n>批量操作结果</h2><p id="batchProgress" role="status"></p><div class="batch-meter-label"><span id="batchProcessed"></span><strong id="batchPercent"></strong></div><progress id="batchMeter" max="1" value="0" aria-label="批量处理进度"></progress><p id="batchCurrent" class="batch-current" role="status"></p><p id="batchBackupDirectory" class="backup-path" hidden></p><div id="backupCancelControls" hidden><button id="cancelBackup" class="cancel-backup" data-i18n>取消备份</button><p class="backup-location-note" data-i18n>关闭窗口会在后台继续；取消备份会停止任务，已完成的备份保留。</p></div></div><button id="closeBatch" aria-label="关闭批量操作结果">×</button></div><div id="batchResults" class="backups-list"></div></dialog>
+  <dialog id="backupLocationDialog" class="backups-dialog" aria-labelledby="backupLocationTitle"><form id="backupLocationForm" class="backup-location-form"><h2 id="backupLocationTitle" data-i18n>设置</h2><p id="backupLocationDescription" data-i18n>设置手动备份的保存文件夹。更改后，已有备份仍保留在原处。</p><fieldset id="themeSettings" class="theme-settings"><legend data-i18n>界面主题</legend><p data-i18n>切换即生效，自动记住选择。</p><div class="theme-options"><label class="theme-option" data-preview="warm"><input type="radio" name="theme" value="warm" checked><span class="theme-swatch" aria-hidden="true"><i></i><i></i><i></i></span><span data-i18n>B · 暖白阅读（默认）</span></label><label class="theme-option" data-preview="light"><input type="radio" name="theme" value="light"><span class="theme-swatch" aria-hidden="true"><i></i><i></i><i></i></span><span data-i18n>A · 浅色极简</span></label><label class="theme-option" data-preview="dark"><input type="radio" name="theme" value="dark"><span class="theme-swatch" aria-hidden="true"><i></i><i></i><i></i></span><span data-i18n>C · 深色工作台</span></label></div></fieldset><label for="backupDirectory" data-i18n>保存文件夹</label><div class="backup-directory-input"><input id="backupDirectory" type="text" required autocomplete="off" spellcheck="false"><button id="chooseBackupDirectory" type="button" data-i18n>选择文件夹…</button></div><p data-i18n>文件命名：会话 ID-随机标识.zip。每次备份单独保存，会话标题和备份时间可在“备份记录”中查看。</p><p id="backupLocationError" role="status"></p><div class="backup-location-actions"><button id="cancelBackupLocation" type="button" data-i18n>取消</button><button id="saveBackupLocation" type="submit" class="primary" data-i18n>使用此位置</button></div></form></dialog>
+  <div id="notice" class="notice" role="status" hidden><span id="noticeText"></span><a id="backupDownload" hidden data-i18n>下载备份</a><button id="undoDelete" class="undo-delete" hidden data-i18n>撤销删除</button><button id="dismissNotice" aria-label="关闭通知">×</button></div>
 </body>
 </html>

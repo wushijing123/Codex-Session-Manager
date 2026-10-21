@@ -1,5 +1,6 @@
 # Workflows
 
+> Legacy v0.6 cold-storage/quarantine workflows. For the v0.7.0 session library, see [README](../README.en.md).
 [中文](WORKFLOWS.md) · [English](WORKFLOWS.en.md)
 
 ## Main user flow

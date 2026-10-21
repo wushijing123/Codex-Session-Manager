@@ -1,1143 +1,709 @@
 (() => {
   "use strict";
-
+  const themeKey = "codex-session-manager-theme";
+  function applyTheme(value) {
+    const theme = ["warm", "light", "dark"].includes(value) ? value : "warm";
+    document.documentElement.dataset.theme = theme;
+    document.querySelectorAll('input[name="theme"]').forEach(input => { input.checked = input.value === theme; });
+    return theme;
+  }
+  let savedTheme;
+  try { savedTheme = localStorage.getItem(themeKey); } catch {}
+  applyTheme(savedTheme);
   const i18n = window.SessionManagerI18n;
   const t = (source, variables) => i18n.t(source, variables);
-
-  if (window.location.protocol === "file:") {
-    window.addEventListener("DOMContentLoaded", () => {
-      document.documentElement.lang = i18n.locale();
-      document.title = t("请从本地服务打开看板");
-      document.body.className = "file-open-guide";
-      document.body.textContent = "";
-      const main = document.createElement("main");
-      const card = document.createElement("article");
-      card.className = "file-open-card";
-      const title = document.createElement("h1");
-      title.textContent = t("请从本地服务打开看板");
-      const copy = document.createElement("p");
-      copy.textContent = t("这个文件只是界面源码。回到 Codex，输入“打开会话生命周期看板”。");
-      card.append(title, copy);
-      main.append(card);
-      document.body.append(main);
-    }, {once: true});
+  const $ = selector => document.querySelector(selector);
+  const node = (tag, className, text) => {
+    const element = document.createElement(tag);
+    if (className) element.className = className;
+    if (text != null) element.textContent = text;
+    return element;
+  };
+  if (location.protocol === "file:") {
+    document.body.className = "file-open-guide";
+    document.body.textContent = t("请通过本地服务打开：python3 scripts/session_manager.py dashboard");
     return;
   }
+  const state = {csrf: "", catalog: {sessions: []}, capabilities: {}, filter: "all", query: "", selected: null,
+    backups: [], detail: null, page: 1, suggestionState: "all", busy: false, detailRequest: 0, searchRequest: 0, search: null, hits: new Map(),
+    checked: new Set(), batch: null, trash: [], trashChecked: new Set(), undoFilename: null, backup_location: null};
+  let pendingBackup = null;
+  const pageSize = 50;
+  const pageRecords = records => records.slice((state.page - 1) * pageSize, state.page * pageSize);
+  const escapeHTML = text => String(text).replace(/[&<>"']/g, character => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[character]));
+  const markdown = new marked.Marked({gfm: true, breaks: true, renderer: {
+    html: ({text}) => escapeHTML(text),
+    // Keep image descriptions readable without fetching remote history assets.
+    image: ({text}) => escapeHTML(text)
+  }});
+  const staticText = [...document.querySelectorAll("[data-i18n]")].map(element => ({element, source: element.textContent}));
+  const attributes = [...document.querySelectorAll("[placeholder], [aria-label]")].flatMap(element =>
+    ["placeholder", "aria-label"].filter(key => element.hasAttribute(key)).map(key => ({element, key, source: element.getAttribute(key)})));
+  const labels = {active: "未归档", archived: "已归档", cold: "旧版冷存档", quarantine: "旧版隔离", unindexed: "未索引", missing: "日志缺失"};
+  const errors = {
+    not_in_trash: "此恢复副本不在回收站中，可能已恢复或清理。",
+    invalid_trash_selection: "请选择回收站中的条目。",
+    trash_purge_failed: "部分恢复副本无法清除，请检查权限后重试。",
+    no_suggestion: "此会话当前没有整理建议，已跳过。",
+    suggestion_changed: "整理建议已变化，已跳过；请重新查看后选择。",
+    invalid_batch_selection: "请选择要操作的会话。",
+    invalid_session_id: "会话 ID 无效，操作未开始。",
+    batch_already_running: "已有批量操作正在进行，请等待完成。",
+    unknown_session: "会话已不存在，已跳过。",
+    unknown_batch: "操作记录已失效，请刷新检查会话状态。",
+    already_in_target_state: "已经是目标状态，无需重复操作。",
+    invalid_backup: "备份格式无效，无法恢复。",
+    invalid_backup_directory: "请选择已存在的文件夹，不能使用 Codex 数据目录或符号链接。",
+    backup_directory_unavailable: "备份位置不可用，请连接磁盘或重新选择文件夹。",
+    folder_picker_unavailable: "暂时无法打开文件夹选择器，请直接填写完整的文件夹路径。",
+    backup_cancelled: "备份已取消，未完成的文件已清理。",
+    backup_not_cancellable: "此操作不能通过取消备份停止。",
+    backup_hash_mismatch: "备份校验失败，原会话未被覆盖。",
+    backup_session_mismatch: "备份的会话 ID 不一致，已停止恢复。",
+    restore_session_exists: "会话仍然存在，无需恢复；不会覆盖现有记录。",
+    restore_file_saved_index_pending: "聊天文件已取回，但 Codex 尚未完成识别。备份已保留，请刷新后检查。",
+    backup_too_large: "备份超过当前恢复大小限制。",
 
-  const state = {
-    csrf: "",
-    catalog: null,
-    settings: {},
-    capabilities: {},
-    selected: null,
-    lastFocused: null,
-    confirmationSheet: null,
-    manifests: [],
-    purgeRequests: [],
-    contentSearch: null,
-    explorerVisibleLimit: 50,
-    auto: {preview: null, selected: new Set(), visibleLimit: 25}
+    demo_read_only: "演示模式不执行归档或删除。",
+    native_method_unavailable: "当前 Codex CLI 不支持此操作，请更新 CLI 后重启会话库。",
+    codex_request_timeout: "Codex 响应超时，请刷新后检查真实状态。",
+    codex_connection_closed: "Codex 连接已关闭，请刷新后重试。",
+    session_protected_or_linked: "此会话已受保护或含关联任务，请先在 Codex 中处理。",
+    session_file_unavailable: "此会话的原始日志不可用。",
+    database_selection_required: "未找到唯一的会话数据库，无法生成可靠备份。",
+    session_changed_retry: "会话仍在更新，请稍后重新备份。",
+    local_operation_failed: "本地操作未完成，请检查目录权限后重试。"
   };
-
-  function applyExecutionState(executionState) {
-    if (!executionState) {
-      state.confirmationSheet = null;
-      state.manifests = [];
-      state.purgeRequests = [];
-      return;
-    }
-    state.confirmationSheet = executionState.confirmation_sheet || null;
-    state.manifests = executionState.manifests || [];
-    state.purgeRequests = executionState.purge_requests || [];
+  function errorText(error) { return t(errors[error.message] || error.message); }
+  function formatDate(value) {
+    if (!value) return "";
+    const number = Number(value);
+    const date = Number.isFinite(number) ? new Date(number > 1e12 ? number : number * 1000) : new Date(value);
+    return Number.isNaN(date.valueOf()) ? "" : date.toLocaleDateString(i18n.locale() === "en" ? "en-US" : "zh-CN", {month: "short", day: "numeric", year: "numeric"});
   }
-
-  const labels = {
-    active: "使用中", archived: "已归档", cold: "冷存档", quarantine: "14 天隔离", unindexed: "未索引", missing: "文件缺失",
-    protected: "必须保留", high_value: "建议保留", cold_archive: "建议冷存档", review_required: "需要确认",
-    delete_candidate: "建议先隔离", permanent_delete_candidate: "可手动删除", unknown: "未知",
-    cold_archive_action: "冷存档", keep: "保留", archive: "旧版归档标记", unarchive: "旧版取消归档标记", restore: "恢复到 Codex", protect: "锁定此会话，不参与整理",
-    permanent_delete: "永久删除", purge_after_quarantine: "隔离到期后删除", current_session: "当前正在使用", pinned: "已置顶",
-    permanent_protection: "永久保护", state_conflict_or_missing: "状态冲突或文件缺失", has_parent_or_child: "存在父子依赖",
-    group_action_required: "需整组处理", unindexed_log: "未索引日志", automation: "自动化任务", verified_write_work: "检测到实际写入",
-    title_value_hint_needs_review: "标题有价值信号，需确认", recent_automation_run: "自动化最近运行", old_automation_history: "较早的自动化历史",
-    inactive_with_value_signal: "长期闲置，但有价值信号", inactive_without_unique_value: "长期闲置，未发现独有价值",
-    old_short_temporary: "旧的短临时对话", old_large_session: "旧的大体积会话", insufficient_evidence: "证据不足",
-    pin_snapshot_unavailable_or_stale: "置顶状态执行前待刷新", hard_protected: "真正锁定", not_plain_archive: "不是普通归档",
-    manual_plan_conflict: "与人工计划冲突", planning_gate_closed: "数据库识别未通过", fresh_pin_snapshot_required: "置顶状态需要通过 Skill 同步；“刷新会话”只重新扫描本机会话。",
-    codex_one_off_review: "Codex 判断为一次性对话", recent_one_off_review: "近期一次性对话", codex_value_review: "Codex 判断有复用价值",
-    codex_review_uncertain: "Codex 判断仍需复核", inactive_60d_permanent_delete_candidate: "超过 60 天且符合低风险条件",
-    incinerator_requires_archive_or_quarantine: "只接受隔离中的会话", incinerator_requires_plain_archive: "永久删除只接受普通归档会话",
-    confirmation_sheet_missing_or_expired: "确认单已过期，请重新生成", second_confirmation_required: "请完成二次确认",
-    planned_actions_changed_after_review: "确认后状态已变化，请重新生成确认单", confirmation_sheet_has_blockers: "确认单仍有执行阻塞",
-    helper_already_running: "执行助手已在等待", important_warnings_not_acknowledged: "请先勾选知情确认",
-    cold_storage_target_required: "请先在设置中选择冷存档目录", database_selection_required: "数据库识别未通过",
-    directory_picker_unavailable: "当前系统不支持目录选择器", directory_picker_timeout: "目录选择超时，请重试",
-    directory_picker_failed: "无法打开目录选择器", directory_picker_invalid_selection: "选择的目录不可用",
-    unsafe_storage_target: "该目录不能作为冷存档位置", directory_not_writable: "该目录不可写，请选择其他目录",
-    manifest_not_confirmed: "这个执行单未经过当前确认流程，请重新生成",
-    ready: "待执行", running: "执行中", completed: "已完成", failed: "执行失败", stopped: "执行中断",
-    helper_running: "执行助手仍在运行", helper_stopped_without_completion: "执行助手已停止，请检查日志",
-    cold_archive_applied: "冷存档已完成", quarantine_applied: "隔离已完成", permanent_delete_applied: "永久删除已完成",
-    restore_applied: "恢复已完成", purge_applied: "隔离包已永久删除", manifest_ready: "执行单有效",
-    restore_not_verified: "当前机器还没有通过真实恢复闭环验证，恢复按钮保持禁用",
-    restore_requires_cold_or_quarantine: "只有冷存档或 14 天隔离的会话才能恢复",
-    restore_package_missing: "没有找到可恢复的数据包",
-    restore_package_not_unique: "找到多个同名恢复包，请先人工核对",
-    same_volume_no_system_disk_reclaim: "目标目录和 Codex 在同一磁盘，只能整理，不会释放这块磁盘的空间",
-    cross_volume: "目标目录位于另一块磁盘，可释放当前 Codex 磁盘空间",
-    no_destructive_plans: "没有可执行计划", unarchive_requires_plain_archive: "只有普通归档会话才能取消归档",
-    codex_cli_unavailable: "未找到支持取消归档的 Codex CLI", official_unarchive_failed: "Codex 官方取消归档失败",
-    official_unarchive_timeout: "Codex 官方取消归档超时", official_unarchive_not_verified: "取消归档后未通过重新扫描验证"
-  };
-
-  const labelFor = key => t(labels[key] || key || "无");
-
-  const stateColors = {
-    active: "var(--blue)", archived: "var(--green)", cold: "var(--violet)", quarantine: "var(--amber)",
-    unindexed: "var(--red)", missing: "var(--red)"
-  };
-  const destructiveActions = new Set(["cold_archive", "quarantine", "permanent_delete", "purge_after_quarantine"]);
-  const $ = selector => document.querySelector(selector);
-  const $$ = selector => [...document.querySelectorAll(selector)];
-  const el = (tag, className = "", text = "") => {
-    const node = document.createElement(tag);
-    if (className) node.className = className;
-    if (text !== "") node.textContent = text;
-    return node;
-  };
-
-  const staticTextNodes = [];
-  const staticAttributes = [];
-
-  function registerStaticTranslations() {
-    const walker = document.createTreeWalker(document.documentElement, NodeFilter.SHOW_TEXT);
-    let node;
-    while ((node = walker.nextNode())) {
-      const source = node.nodeValue.trim();
-      if (!source || !i18n.has(source)) continue;
-      node.__i18nSource = source;
-      staticTextNodes.push(node);
-    }
-    document.querySelectorAll("[placeholder], [aria-label]").forEach(element => {
-      ["placeholder", "aria-label"].forEach(attribute => {
-        const source = element.getAttribute(attribute);
-        if (source && i18n.has(source)) staticAttributes.push({element, attribute, source});
-      });
-    });
+  function bytes(value) {
+    const size = Number(value) || 0;
+    if (size < 1024) return `${size} B`;
+    if (size < 1024 ** 2) return `${(size / 1024).toFixed(1)} KB`;
+    return `${(size / 1024 ** 2).toFixed(1)} MB`;
   }
-
-  function translateStatic() {
+  async function api(path, payload) {
+    const response = await fetch(path, payload === undefined ? {} : {method: "POST", headers: {"Content-Type": "application/json", "X-CSRF-Token": state.csrf}, body: JSON.stringify(payload)});
+    const result = await response.json();
+    if (!response.ok || result.error) throw new Error(result.error || t("请求失败"));
+    return result;
+  }
+  function notice(text, download, error = false, undoFilename = null) {
+    $("#noticeText").textContent = text;
+    $("#notice").classList.toggle("error", error);
+    $("#notice").hidden = false;
+    $("#backupDownload").hidden = !download;
+    if (download) $("#backupDownload").href = download;
+    state.undoFilename = undoFilename;
+    $("#undoDelete").hidden = !undoFilename;
+  }
+  const selectedRecord = () => state.catalog.sessions.find(record => record.id === state.selected);
+  function suggestionText(record) {
+    const suggestion = record.suggestion || {};
+    return suggestion.action === "delete"
+      ? t("已闲置 {days} 天，现有记录显示为临时或低复用会话。建议删除前阅读记录；点击删除会自动保留备份。", {days: suggestion.days})
+      : t("已闲置 {days} 天。归档后仍可搜索、查看和重新打开。", {days: suggestion.days});
+  }
+  function translate() {
     document.documentElement.lang = i18n.locale();
-    staticTextNodes.forEach(node => {
-      const leading = node.nodeValue.match(/^\s*/)?.[0] || "";
-      const trailing = node.nodeValue.match(/\s*$/)?.[0] || "";
-      node.nodeValue = `${leading}${t(node.__i18nSource)}${trailing}`;
+    document.title = "Codex-Session-Manager";
+    staticText.forEach(({element, source}) => { element.textContent = t(source); });
+    attributes.forEach(({element, key, source}) => element.setAttribute(key, t(source)));
+    $("#languageBtn").textContent = i18n.locale() === "en" ? "中文" : "EN";
+    $("#languageBtn").setAttribute("aria-label", t(i18n.locale() === "en" ? "切换为中文" : "切换为英文"));
+    renderProjects();
+    renderList();
+    renderReader();
+    if ($("#backupsDialog").open) renderBackups();
+    if ($("#trashDialog").open) renderTrash();
+    renderBackupLocation();
+    renderBatch();
+  }
+  function filteredRecords() {
+    const query = state.query.toLocaleLowerCase();
+    let records = state.catalog.sessions.filter(record => {
+      const matchesText = !query || [record.title, record.cwd, record.id, record.first_user_message].some(value => String(value || "").toLocaleLowerCase().includes(query)) || state.hits.has(record.id);
+      const matchesFilter = state.filter === "all" || (state.filter === "suggested"
+        ? record.suggestion?.action && (state.suggestionState === "all" || record.actual_state === state.suggestionState)
+        : record.actual_state === state.filter);
+      const matchesProject = !$("#projectSelect").value || (record.cwd || "") === $("#projectSelect").value;
+      const days = Number($("#ageSelect").value);
+      return matchesText && matchesFilter && matchesProject && (!days || record.age_days >= days);
     });
-    staticAttributes.forEach(({element, attribute, source}) => element.setAttribute(attribute, t(source)));
-    const button = $("#languageBtn");
-    button.textContent = i18n.locale() === "en" ? "中文" : "EN";
-    button.setAttribute("aria-label", t(i18n.locale() === "en" ? "切换为中文" : "切换为英文"));
-    document.title = t("Codex 会话生命周期");
+    const sort = $("#sortSelect").value;
+    records.sort((a, b) => sort === "size" ? b.size_bytes - a.size_bytes : sort === "oldest" ? a.updated_at - b.updated_at : b.updated_at - a.updated_at);
+    return records;
   }
-
-  function toggleLanguage() {
-    i18n.setLocale(i18n.locale() === "en" ? "zh-CN" : "en");
-    closeDrawer();
-    translateStatic();
-    if (state.catalog) renderAll();
-  }
-  const humanBytes = value => {
-    let size = Math.max(0, Number(value) || 0);
-    const units = ["B", "KiB", "MiB", "GiB", "TiB"];
-    let index = 0;
-    while (size >= 1024 && index < units.length - 1) { size /= 1024; index += 1; }
-    return index ? `${size.toFixed(1)} ${units[index]}` : `${Math.round(size)} B`;
-  };
-  const shortDate = value => {
-    const number = Number(value || 0);
-    const date = new Date(number > 10_000_000_000 ? number : number * 1000);
-    return Number.isNaN(date.valueOf()) ? "—" : date.toLocaleDateString(i18n.locale() === "en" ? "en-US" : "zh-CN");
-  };
-  const compactTitle = (value, maxLength = 80) => {
-    const normalized = String(value || t("(无标题)")).replace(/\s+/g, " ").trim();
-    return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 1)}…` : normalized;
-  };
-  const countdown = seconds => {
-    const total = Math.max(0, Number(seconds) || 0);
-    const days = Math.floor(total / 86400);
-    const hours = Math.floor((total % 86400) / 3600);
-    return days ? t("{days} 天 {hours} 小时", {days, hours}) : t("{hours} 小时", {hours});
-  };
-  const actionLabel = action => labelFor(action === "cold_archive" ? "cold_archive_action" : action);
-  const planBlocked = session => session.actual_state === "active" || session.pinned || session.permanent_protection ||
-    session.state_conflict || session.actual_state === "missing" || session.actual_state === "unindexed";
-  const toast = message => {
-    const node = $("#toast");
-    node.textContent = message;
-    node.classList.add("show");
-    clearTimeout(toast.timer);
-    toast.timer = setTimeout(() => node.classList.remove("show"), 3400);
-  };
-
-  async function api(path, options = {}) {
-    const headers = {"Content-Type": "application/json", ...(options.headers || {})};
-    if (options.method === "POST") headers["X-CSRF-Token"] = state.csrf;
-    const response = await fetch(path, {...options, headers});
-    let data;
-    try { data = await response.json(); } catch { throw new Error(t("本地服务已断开")); }
-    if (!response.ok) throw new Error(data.error || "request_failed");
-    return data;
-  }
-
-  function switchView(id) {
-    $$(".tab").forEach(node => {
-      const active = node.dataset.view === id;
-      node.classList.toggle("active", active);
-      if (active) node.setAttribute("aria-current", "page"); else node.removeAttribute("aria-current");
+  function renderList() {
+    $("#settingsBtn").disabled = state.busy || !state.backup_location;
+    const records = filteredRecords();
+    const pages = Math.max(1, Math.ceil(records.length / pageSize));
+    state.page = Math.min(state.page, pages);
+    const existing = new Set(state.catalog.sessions.map(record => record.id));
+    state.checked.forEach(id => {if (!existing.has(id)) state.checked.delete(id);});
+    $("#totalCount").textContent = state.catalog.sessions.length;
+    $("#resultCount").textContent = t("第 {start}–{end} 条，共 {total} 条", {start: records.length ? (state.page - 1) * pageSize + 1 : 0, end: Math.min(state.page * pageSize, records.length), total: records.length});
+    $("#suggestionState").hidden = state.filter !== "suggested";
+    $("#dataSource").textContent = t(state.capabilities.demo ? "虚构演示" : "本机会话");
+    $("#storageTotal").textContent = bytes(state.catalog.summary?.total_bytes);
+    $("#filters").querySelectorAll("button").forEach(button => button.setAttribute("aria-pressed", String(button.dataset.filter === state.filter)));
+    const list = $("#sessionList");
+    const scrollTop = $("#libraryScroll").scrollTop;
+    list.replaceChildren();
+    pageRecords(records).forEach(record => {
+      const item = node("div", "session-item");
+      item.classList.toggle("checked", state.checked.has(record.id));
+      const label = node("label", "session-check");
+      const checkbox = node("input");
+      checkbox.type = "checkbox"; checkbox.checked = state.checked.has(record.id); checkbox.disabled = state.busy;
+      checkbox.setAttribute("aria-label", t("选择会话：{title}", {title: record.title || t("无标题会话")}));
+      checkbox.addEventListener("change", () => {
+        checkbox.checked ? state.checked.add(record.id) : state.checked.delete(record.id);
+        item.classList.toggle("checked", checkbox.checked); renderSelection();
+      });
+      label.append(checkbox);
+      const row = node("button", "session-row");
+      row.setAttribute("aria-current", String(record.id === state.selected));
+      row.dataset.sessionId = record.id;
+      const top = node("div", "row-top");
+      top.append(node("span", "row-title", record.title || t("无标题会话")), node("time", "row-date", formatDate(record.updated_at)));
+      const project = String(record.cwd || "").replace(/\/$/, "").split("/").pop();
+      const projectLine = node("div", "row-project");
+      projectLine.append(node("span", "project-badge", project || t("无项目")), node("span", "row-size", bytes(record.size_bytes)));
+      row.append(top, projectLine);
+      const bottom = node("div", "row-bottom");
+      const flags = node("span", "row-flags");
+      flags.append(node("span", `row-state ${record.actual_state}`, t(labels[record.actual_state] || record.actual_state)));
+      if (record.suggestion?.action) flags.append(node("span", `recommendation-tag ${record.suggestion.action}`, t(record.suggestion.action === "archive" ? "建议归档" : "建议删除")));
+      bottom.append(flags);
+      row.append(bottom);
+      const excerpts = state.hits.get(record.id);
+      if (excerpts?.length) row.append(node("p", "excerpt", typeof excerpts[0] === "string" ? excerpts[0] : excerpts[0].text || excerpts[0].excerpt || ""));
+      row.addEventListener("click", () => selectSession(record.id));
+      item.append(label, row); list.append(item);
     });
-    $$(".view").forEach(node => node.classList.toggle("active", node.id === `view-${id}`));
-    if (id === "sessions") { renderExplorer(); loadAutoPreview(); }
-    if (id === "queue") renderQueue();
-    const heading = $(`#view-${id} h1`);
-    if (heading) { heading.tabIndex = -1; heading.focus({preventScroll: true}); }
-    window.scrollTo({top: 0, behavior: "auto"});
+    if (!records.length) list.append(node("p", "empty-copy", t(state.filter === "suggested" ? "暂时没有需要整理的会话。" : "没有找到会话，试试其他关键词。")));
+    $("#libraryScroll").scrollTop = scrollTop;
+    $("#pagination").hidden = !records.length;
+    $("#prevPage").disabled = state.page <= 1;
+    $("#nextPage").disabled = state.page >= pages;
+    $("#pageSelect").replaceChildren(...Array.from({length: pages}, (_, index) => {
+      const option = node("option", "", t("第 {page} / {pages} 页", {page: index + 1, pages}));
+      option.value = index + 1; return option;
+    }));
+    $("#pageSelect").value = state.page;
+    renderSelection();
   }
-
-  function metric(label, value, note, tone = "") {
-    const card = el("article", `metric ${tone}`.trim());
-    card.append(el("span", "label", label), el("strong", "", value), el("small", "", note));
-    return card;
-  }
-
-  function lifecycleEntries() {
-    const byState = state.catalog.summary.by_state || {};
-    return ["active", "archived", "cold", "quarantine", "unindexed", "missing"]
-      .map(key => ({key, label: labelFor(key), value: Number(byState[key] || 0), color: stateColors[key]}))
-      .filter(item => item.value > 0);
-  }
-
-  function renderDonut(entries, total) {
-    const donut = $("#lifecycleDonut");
-    let cursor = 0;
-    const segments = entries.map(item => {
-      const start = cursor;
-      cursor += 100 * item.value / Math.max(total, 1);
-      return `${item.color} ${start.toFixed(2)}% ${cursor.toFixed(2)}%`;
-    });
-    donut.style.background = `conic-gradient(${segments.join(",") || "var(--line) 0 100%"})`;
-    $("#donutTotal").textContent = String(total);
-    const legend = $("#lifecycleLegend");
-    legend.replaceChildren();
-    entries.forEach(item => {
-      const row = el("div", "legend-row");
-      const dot = el("span", "legend-dot"); dot.style.background = item.color;
-      row.append(dot, el("span", "", item.label), el("strong", "", String(item.value)));
-      legend.append(row);
-    });
-  }
-
-  function renderRecommendationChart() {
-    const summary = state.catalog.summary;
-    const chart = $("#recommendationChart");
-    chart.replaceChildren();
-    const order = ["protected", "high_value", "cold_archive", "delete_candidate", "permanent_delete_candidate", "review_required", "unknown"];
-    const entries = order.map(key => [key, Number(summary.by_recommendation[key] || 0)]).filter(([, value]) => value > 0);
-    const max = Math.max(1, ...entries.map(([, value]) => value));
-    entries.forEach(([key, value]) => {
-      const row = el("div", "bar-row");
-      const track = el("div", "bar-track");
-      const fill = el("div", `bar-fill rec-${key}`);
-      fill.style.width = `${100 * value / max}%`;
-      track.append(fill);
-      row.append(el("span", "", labelFor(key)), track, el("strong", "", String(value)));
-      chart.append(row);
+  function renderSelection() {
+    const records = filteredRecords(), visible = pageRecords(records);
+    const count = visible.filter(record => state.checked.has(record.id)).length;
+    $("#selectVisible").checked = !!visible.length && count === visible.length;
+    $("#selectVisible").indeterminate = count > 0 && count < visible.length;
+    $("#selectVisible").disabled = state.busy || !visible.length;
+    $("#selectFiltered").disabled = state.busy || !records.length;
+    $("#clearSelection").disabled = state.busy;
+    $("#batchBar").hidden = !state.checked.size;
+    const hidden = [...state.checked].filter(id => !records.some(record => record.id === id)).length;
+    $("#selectionCount").textContent = t("已选 {count} 条", {count: state.checked.size});
+    const other = state.checked.size - count - hidden;
+    $("#selectionScope").hidden = !other && !hidden;
+    $("#selectionScope").textContent = t("本页 {current} 条 · 其他页 {other} 条 · 筛选外 {hidden} 条", {current: count, other, hidden});
+    const recommended = state.catalog.sessions.filter(record => state.checked.has(record.id) && record.suggestion?.action);
+    const archives = recommended.filter(record => record.suggestion.action === "archive").length;
+    const deletes = recommended.filter(record => record.suggestion.action === "delete").length;
+    $("#applySuggestions").hidden = !recommended.length;
+    $("#suggestedSummary").hidden = !recommended.length;
+    $("#suggestedSummary").textContent = t("按建议归档 {archive} 条、删除 {delete} 条；删除自动备份，无建议的会话跳过。", {archive: archives, delete: deletes});
+    $("#selectFiltered").textContent = t("全选筛选结果（{count}）", {count: records.length});
+    document.querySelectorAll("[data-batch]").forEach(button => {
+      const capability = button.dataset.batch === "unarchive" ? "archive" : button.dataset.batch;
+      button.disabled = state.busy || (capability === "suggested"
+        ? !(archives && state.capabilities.archive || deletes && state.capabilities.delete) : !state.capabilities[capability]);
     });
   }
-
-  function renderStorage(entries) {
-    const bytes = state.catalog.summary.bytes_by_state || {};
-    const total = Number(state.catalog.summary.total_bytes || 0);
-    $("#storageTotal").textContent = humanBytes(total);
-    const stack = $("#storageStack"); stack.replaceChildren();
-    const legend = $("#storageLegend"); legend.replaceChildren();
-    entries.forEach(item => {
-      const value = Number(bytes[item.key] || 0);
-      if (!value) return;
-      const segment = el("span", "storage-segment");
-      segment.style.width = `${Math.max(0.6, 100 * value / Math.max(total, 1))}%`;
-      segment.style.background = item.color;
-      segment.title = `${item.label} ${humanBytes(value)}`;
-      stack.append(segment);
-      const row = el("div", "legend-row");
-      const dot = el("span", "legend-dot"); dot.style.background = item.color;
-      row.append(dot, el("span", "", item.label), el("strong", "", humanBytes(value)));
-      legend.append(row);
-    });
-  }
-
-  function renderAgeChart() {
-    const bands = state.catalog.summary.archived_age_bands || {};
-    const entries = [
-      [t("7 天内"), Number(bands.under_7 || 0)],
-      [t("7–29 天"), Number(bands.days_7_29 || 0)],
-      [t("30–89 天"), Number(bands.days_30_89 || 0)],
-      [t("90 天+"), Number(bands.days_90_plus || 0)]
-    ];
-    const max = Math.max(1, ...entries.map(([, value]) => value));
-    const chart = $("#ageChart"); chart.replaceChildren();
-    entries.forEach(([label, value]) => {
-      const item = el("div", "column-item");
-      const barWrap = el("div", "column-track");
-      const bar = el("div", "column-fill");
-      bar.style.height = `${Math.max(value ? 8 : 0, 100 * value / max)}%`;
-      barWrap.append(bar);
-      item.append(el("strong", "", String(value)), barWrap, el("span", "", label));
-      chart.append(item);
-    });
-  }
-
-  function renderHome() {
-    const catalog = state.catalog;
-    const summary = catalog.summary;
-    const sessions = catalog.sessions;
-    const plans = sessions.filter(item => destructiveActions.has(item.planned_action));
-    const autoEligible = state.auto.preview
-      ? state.auto.preview.proposals.filter(item => !item.blocked_reason)
-      : sessions.filter(item => item.actual_state === "archived" && ["cold_archive", "delete_candidate"].includes(item.recommendation) && !item.relation_count && !planBlocked(item));
-    const issueCount = Number(summary.unindexed || 0) + Number(summary.state_conflicts || 0);
-
-    $("#homeTotal").textContent = String(summary.total);
-    $("#homeStorage").textContent = humanBytes(summary.total_bytes);
-    $("#homeCandidates").textContent = t("{count} 条", {count: autoEligible.length});
-    $("#homePlans").textContent = t("{count} 条", {count: plans.length});
-    $("#homeHeroSummary").textContent = t("{active} 条正在使用，{archived} 条已归档。系统发现 {eligible} 条可安全加入整理计划。", {active: summary.by_state.active || 0, archived: summary.by_state.archived || 0, eligible: autoEligible.length});
-    $("#scanMeta").textContent = t("更新于 {time}", {time: new Date(catalog.generated_at).toLocaleString(i18n.locale() === "en" ? "en-US" : "zh-CN")});
-
-    $("#metricGrid").replaceChildren(
-      metric(t("正在使用"), String(summary.by_state.active || 0), t("不会进入破坏性计划"), "blue"),
-      metric(t("普通归档"), String(summary.by_state.archived || 0), t("{percent}% 的会话", {percent: Math.round(100 * (summary.by_state.archived || 0) / Math.max(summary.total, 1))}), "green"),
-      metric(t("需要检查"), String(issueCount), t("未索引或状态冲突"), issueCount ? "amber" : "green"),
-      metric(t("可整理空间"), humanBytes(autoEligible.reduce((sum, item) => sum + Number(item.size_bytes || 0), 0)), t("冷存档或先隔离"), "violet")
-    );
-
-    const warning = $("#warningPanel");
-    const issues = [];
-    if (catalog.database_ambiguous) issues.push(t("检测到多个同样可信的数据库，执行功能已关闭。"));
-    if (catalog.pin_snapshot_status !== "snapshot") issues.push(t("置顶状态需要在真正执行前刷新；现在可以安全浏览和制定计划。"));
-    warning.classList.toggle("hidden", !issues.length);
-    warning.textContent = issues.join(" ");
-
-    const planningAllowed = Boolean(catalog.selected_database && !catalog.database_ambiguous);
-    const gate = $("#gateBadge");
-    gate.textContent = catalog.mutation_allowed ? t("可执行") : planningAllowed ? t("可规划") : t("只读");
-    gate.classList.toggle("ok", catalog.mutation_allowed);
-
-    const entries = lifecycleEntries();
-    renderDonut(entries, summary.total);
-    renderRecommendationChart();
-    renderStorage(entries);
-    renderAgeChart();
-
-    const facts = $("#integrityList"); facts.replaceChildren();
-    [
-      [t("数据库"), catalog.database_ambiguous ? t("存在歧义") : t("识别正常"), catalog.database_ambiguous ? "danger" : "safe"],
-      [t("置顶保护"), catalog.pin_snapshot_status === "snapshot" ? t("已同步") : t("执行前待同步"), catalog.pin_snapshot_status === "snapshot" ? "safe" : "warn"],
-      [t("未索引日志"), String(summary.unindexed || 0), summary.unindexed ? "warn" : "safe"],
-      [t("状态冲突"), String(summary.state_conflicts || 0), summary.state_conflicts ? "warn" : "safe"],
-      [t("父子任务组"), String(summary.group_action_required || 0), summary.group_action_required ? "warn" : "safe"]
-    ].forEach(([key, value, tone]) => {
-      const row = el("div");
-      row.append(el("dt", "", key), el("dd", `fact-${tone}`, value));
-      facts.append(row);
-    });
-
-    const nextTitle = $("#nextActionTitle");
-    const nextText = $("#nextActionText");
-    const nextButton = $("#nextActionBtn");
-    if (plans.length) {
-      nextTitle.textContent = t("核对 {count} 条执行计划", {count: plans.length});
-      nextText.textContent = t("计划还没有执行。进入下一页确认目标、空间和阻塞项。");
-      nextButton.textContent = t("查看执行计划");
-      nextButton.onclick = () => switchView("queue");
-    } else if (autoEligible.length) {
-      nextTitle.textContent = t("先整理 {count} 条旧会话", {count: autoEligible.length});
-      nextText.textContent = t("系统已经分好冷存档和 14 天隔离，你只需检查后加入计划。");
-      nextButton.textContent = t("查看整理建议");
-      nextButton.onclick = () => switchView("sessions");
-    } else {
-      nextTitle.textContent = t("暂时不用处理");
-      nextText.textContent = t("当前没有达到整理条件的普通归档。");
-      nextButton.textContent = t("浏览全部会话");
-      nextButton.onclick = () => switchView("sessions");
-    }
-    $("#autoCount").textContent = String(autoEligible.length);
-    $("#planCount").textContent = String(plans.length);
-  }
-
-  function fillSelect(node, values) {
-    const current = node.value;
-    const first = node.options[0];
-    node.replaceChildren(first);
-    [...new Set(values)].sort().forEach(value => node.append(new Option(labelFor(value), value)));
-    node.value = [...node.options].some(option => option.value === current) ? current : "";
-  }
-
-  function filteredSessions() {
-    const query = $("#searchInput").value.trim().toLowerCase();
-    const selectedState = $("#stateFilter").value;
-    const recommendation = $("#recommendationFilter").value;
-    const risk = $("#riskFilter").value;
-    const turn = $("#turnFilter").value;
-    const contentSearch = state.contentSearch?.query === query ? state.contentSearch : null;
-    const candidates = contentSearch ? state.catalog.sessions.filter(session => contentSearch.byId.has(session.id)) : state.catalog.sessions;
-    return candidates.filter(session => {
-      const haystack = `${session.title} ${session.id} ${session.cwd}`.toLowerCase();
-      return (contentSearch || !query || haystack.includes(query)) &&
-        (!selectedState || session.actual_state === selectedState) &&
-        (!recommendation || session.recommendation === recommendation) &&
-        (!turn || (turn === "one" && session.business_turns === 1) ||
-          (turn === "short" && session.business_turns >= 1 && session.business_turns <= 3) ||
-          (turn === "reviewed" && session.semantic_review) ||
-          (turn === "disposable" && session.semantic_review?.label === "one_off_disposable")) &&
-        (!risk || (risk === "hard" && planBlocked(session)) ||
-          (risk === "group" && session.execution_blocker === "group_action_required") ||
-          (risk === "conflict" && session.state_conflict) ||
-          (risk === "planned" && session.planned_action));
-    });
-  }
-
-  function renderExplorer() {
-    const rows = $("#sessionRows"); rows.replaceChildren();
-    const filtered = filteredSessions();
-    const visible = filtered.slice(0, state.explorerVisibleLimit);
-    $("#resultCount").textContent = t("匹配 {count} 条", {count: filtered.length});
-    visible.forEach(session => {
-      const row = el("tr");
-      const titleCell = el("td", "title-cell");
-      const open = el("button", "session-link");
-      open.setAttribute("aria-label", t("查看会话：{title}", {title: session.title || t("(无标题)")}));
-      const title = el("strong", "", compactTitle(session.title)); title.title = session.title || t("(无标题)");
-      open.append(title, el("small", "", session.id));
-      const hit = state.contentSearch?.byId.get(session.id);
-      const first = hit?.excerpts?.[0];
-      if (first) {
-        const role = first.role === "user" ? t("用户") : first.role === "assistant" ? "Codex" : t("工具产出");
-        open.append(el("small", "content-hit", t("正文命中（{role}）：{excerpt}", {role, excerpt: first.excerpt})));
+  function renderMessages() {
+    const container = $("#messages");
+    container.replaceChildren();
+    for (const message of state.detail?.messages || []) {
+      if (!["user", "assistant"].includes(message.role)) continue;
+      const article = node("article", `message ${message.role}`);
+      const heading = node("div", "message-heading");
+      heading.append(node("span", "avatar", message.role === "user" ? "U" : "C"), node("span", "", message.role === "user" ? t("你") : "Codex"));
+      if (message.timestamp) heading.append(node("time", "", formatDate(message.timestamp)));
+      const body = node("div", "message-body");
+      // Only sanitized Markdown enters the document; raw historical HTML stays text.
+      const fragment = DOMPurify.sanitize(markdown.parse(message.text || ""), {
+        RETURN_DOM_FRAGMENT: true,
+        ALLOWED_TAGS: ["p", "br", "strong", "em", "del", "blockquote", "ul", "ol", "li", "h1", "h2", "h3", "h4", "h5", "h6", "pre", "code", "hr", "table", "thead", "tbody", "tr", "th", "td", "a"],
+        ALLOWED_ATTR: ["href", "title", "start", "align"]
+      });
+      body.append(fragment);
+      body.querySelectorAll("a").forEach(link => {
+        if (!/^https?:\/\/|^mailto:/i.test(link.getAttribute("href") || "")) link.removeAttribute("href");
+        else { link.target = "_blank"; link.rel = "noopener noreferrer"; }
+      });
+      body.querySelectorAll("table").forEach(table => {
+        const wrapper = node("div", "table-scroll");
+        wrapper.tabIndex = 0; wrapper.setAttribute("role", "region"); wrapper.setAttribute("aria-label", t("表格，可横向滚动"));
+        table.replaceWith(wrapper); wrapper.append(table);
+      });
+      const query = state.query;
+      if (query.length >= 2) {
+        const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT), texts = [];
+        while (walker.nextNode()) texts.push(walker.currentNode);
+        for (const textNode of texts) {
+          const text = textNode.textContent, lower = text.toLocaleLowerCase(), needle = query.toLocaleLowerCase();
+          let start = 0, index; const highlighted = document.createDocumentFragment();
+          while ((index = lower.indexOf(needle, start)) !== -1) {
+            highlighted.append(document.createTextNode(text.slice(start, index)), node("mark", "", text.slice(index, index + query.length)));
+            start = index + query.length;
+          }
+          if (start) { highlighted.append(document.createTextNode(text.slice(start))); textNode.replaceWith(highlighted); }
+        }
       }
-      open.addEventListener("click", () => showDetail(session));
-      titleCell.append(open); row.append(titleCell);
-      const actual = el("td"); actual.append(el("span", `state-pill${session.state_conflict ? " danger" : ""}`, labelFor(session.actual_state))); row.append(actual);
-      const recommendationClass = planBlocked(session) ? " danger" : session.execution_blocker ? " warn" : session.recommendation === "high_value" ? " safe" : "";
-      const rec = el("td"); rec.append(el("span", `state-pill${recommendationClass}`, labelFor(session.recommendation))); row.append(rec);
-      row.append(el("td", "", shortDate(session.updated_at)), el("td", "", humanBytes(session.size_bytes)), el("td", "", actionLabel(session.planned_action)));
-      rows.append(row);
-    });
-    $("#explorerTableStatus").textContent = filtered.length ? t("已显示 {shown} / {total} 条", {shown: visible.length, total: filtered.length}) : t("没有符合条件的会话");
-    $("#loadMoreExplorerBtn").classList.toggle("hidden", visible.length >= filtered.length);
+      const card = node("div", "message-card");
+      card.append(body);
+      article.append(heading, card);
+      if (message.images?.length) {
+        const gallery = node("div", "chat-images");
+        for (const attachment of message.images) {
+          const figure = node("figure", "chat-image");
+          const caption = node("figcaption", "", attachment.name);
+          if (attachment.status === "available") {
+            const link = node("a"); link.href = attachment.url; link.target = "_blank"; link.rel = "noopener noreferrer";
+            const img = node("img"); img.src = attachment.url; img.alt = attachment.name; img.loading = "lazy"; img.decoding = "async";
+            img.addEventListener("error", () => {link.hidden = true; caption.textContent = t("图片无法加载：{name}", {name: attachment.name});});
+            link.append(img); figure.append(link);
+          } else {
+            const reasons = {missing: "原图已不在本机，日志也没有可用图片数据。", remote: "远程图片未自动加载。", unsupported: "此图片格式暂不支持预览。", too_large: "图片过大，暂不预览。"};
+            figure.append(node("p", "image-unavailable", t(reasons[attachment.status] || reasons.missing)));
+          }
+          figure.append(caption); gallery.append(figure);
+        }
+        card.append(gallery);
+      }
+      container.append(article);
+    }
+    $("#loadMoreMessages").hidden = state.detail?.next_offset == null;
+    $("#loadMoreMessages").disabled = state.busy;
   }
-
-  async function searchArchivedContent() {
-    const query = $("#searchInput").value.trim();
-    if (query.length < 2) { toast(t("至少输入两个字")); return; }
-    const button = $("#searchContentBtn");
-    const status = $("#contentSearchStatus");
-    button.disabled = true; button.textContent = t("搜索中…");
-    status.classList.remove("hidden"); status.textContent = t("正在本地搜索归档正文，不会更改会话。");
+  function renderReader() {
+    const record = selectedRecord();
+    $("#readerEmpty").hidden = !!record;
+    $("#readerContent").hidden = !record;
+    if (!record) return;
+    $("#sessionTitle").textContent = record.title || t("无标题会话");
+    $("#sessionProject").textContent = record.cwd || "";
+    $("#sessionDate").textContent = `${formatDate(record.updated_at)} · ${bytes(record.size_bytes)}`;
+    $("#sessionState").textContent = t(labels[record.actual_state] || record.actual_state);
+    const regular = ["active", "archived"].includes(record.actual_state) && !record.state_conflict;
+    $("#openCodex").href = record.codex_url;
+    $("#openCodex").hidden = !regular && record.actual_state !== "unindexed";
+    $("#archiveBtn").textContent = t(record.actual_state === "archived" ? "取消归档" : "归档");
+    $("#archiveBtn").disabled = state.busy || !regular || !state.capabilities.archive || record.pinned || record.permanent_protection || record.relation_count > 0;
+    $("#backupBtn").disabled = state.busy || ["cold", "quarantine", "missing"].includes(record.actual_state);
+    $("#deleteBtn").disabled = state.busy || !regular || !state.capabilities.delete || record.pinned || record.permanent_protection || record.relation_count > 0;
+    $("#capabilityNote").hidden = !!state.capabilities.delete;
+    $("#capabilityNote").textContent = t(state.capabilities.demo ? "当前为虚构数据演示，可搜索、阅读和下载备份。归档与删除请在真实会话库使用。" : "当前 Codex CLI 尚不支持官方删除。更新 CLI 后重启会话库即可使用。归档和备份不受影响。");
+    const suggestion = $("#suggestion");
+    suggestion.replaceChildren();
+    suggestion.hidden = !record.suggestion?.action;
+    if (!suggestion.hidden) {
+      suggestion.className = `suggestion ${record.suggestion.action}`;
+      const copy = node("div", "");
+      copy.append(node("strong", "", t(record.suggestion.action === "archive" ? "建议归档" : "建议删除")), node("span", "", suggestionText(record)));
+      suggestion.append(copy);
+    }
+    const detail = state.detail;
+    $("#chatStatus").textContent = !detail ? t("正在加载聊天记录…") : !detail.available ? t("此会话没有可直接读取的日志；旧版存档需要先用旧工具恢复。")
+      : t("已显示 {shown} / {total} 条消息 · 用户消息与 Codex 回复", {shown: detail.messages.length, total: detail.total_messages});
+    renderMessages();
+  }
+  async function selectSession(id, append = false) {
+    state.selected = id;
+    if (!append) state.detail = null;
+    const request = ++state.detailRequest;
+    $(".workspace").classList.add("reading");
+    if (!append) $("#conversation").scrollTop = 0;
+    renderList(); renderReader();
     try {
-      const started = await api("/api/search-archived-content", {method: "POST", body: JSON.stringify({query, limit: 100})});
-      const deadline = Date.now() + 5 * 60 * 1000;
-      let data;
-      while (Date.now() < deadline) {
-        const progress = await api(`/api/search-archived-content/status?job=${encodeURIComponent(started.job_id)}`);
-        const total = Math.max(0, Number(progress.total) || 0);
-        const scanned = Math.min(total, Number(progress.scanned) || 0);
-        status.textContent = t("已搜索 {scanned} / {total} 条，找到 {matches} 条。", {scanned, total, matches: Number(progress.matches) || 0});
-        if (progress.status === "complete") { data = progress.result; break; }
-        if (progress.status === "error") throw new Error(progress.error || "content_search_failed");
+      const result = await api("/api/session-detail", {session_id: id, max_messages: 20, offset: append ? state.detail.next_offset : 0});
+      if (request !== state.detailRequest || id !== state.selected) return;
+      state.detail = {...result.detail, messages: [...(append ? state.detail.messages : []), ...result.detail.messages]};
+      renderReader();
+    } catch (error) {
+      if (request === state.detailRequest) $("#chatStatus").textContent = errorText(error);
+    }
+  }
+  async function runAction(action) {
+    if (state.busy || !state.selected) return;
+    if (action === "backup") return runBatch("backup", [state.selected]);
+    const id = state.selected;
+    state.busy = true; renderList(); renderReader();
+    notice(t(action === "backup" ? "正在生成备份…" : "正在处理…"));
+    try {
+      const result = await api("/api/session-action", {session_id: id, action});
+      state.catalog = result.catalog;
+      renderProjects();
+      const messages = {archive: "已归档", unarchive: "已取消归档", backup: "备份已保存", delete: "已移入回收站，30 天内可恢复"};
+      notice(result.verified === false ? t("Codex 已接收操作，重新扫描尚未确认，请刷新查看。") : t(messages[action]), result.backup?.download_url, false, result.trash?.filename);
+      if (!selectedRecord()) { state.selected = null; state.detail = null; $(".workspace").classList.remove("reading"); }
+      renderList(); renderReader();
+    } catch (error) { notice(errorText(error), null, true); }
+    finally { state.busy = false; renderList(); renderReader(); }
+  }
+  function renderBatch() {
+    const batch = state.batch;
+    const backingUp = batch?.running && batch.action === "backup";
+    $("#backupCancelControls").hidden = !backingUp;
+    $("#cancelBackupInline").hidden = !backingUp;
+    ["#cancelBackup", "#cancelBackupInline"].forEach(selector => {
+      $(selector).disabled = !!batch?.cancel_requested;
+      $(selector).textContent = t(batch?.cancel_requested ? "正在取消…" : "取消备份");
+    });
+    $("#batchBackupDirectory").hidden = batch?.action !== "backup";
+    $("#batchBackupDirectory").textContent = batch?.directory ? t("保存位置：{directory}", {directory: batch.directory}) : "";
+    $("#closeBatch").setAttribute("aria-label", t(batch?.running ? "关闭进度，任务在后台继续" : "关闭批量操作结果"));
+    $("#batchTracker").hidden = !batch?.job;
+    $("#batchStatus").hidden = !batch?.job;
+    if (!batch?.job) return;
+    const results = batch.results || [];
+    $("#batchTitle").textContent = t(batch.running ? "正在批量处理" : "批量操作结果");
+    const completed = results.filter(row => row.status !== "cancelled").length;
+    const summary = batch.running ? t(batch.cancel_requested ? "正在取消备份，请稍候…" : "正在处理 {done} / {total} 条", {done: completed, total: batch.total})
+      : t("完成 {success} · 跳过 {skipped} · 失败 {failed} · 待核实 {pending}", {
+        success: results.filter(row => row.status === "success").length,
+        skipped: results.filter(row => row.status === "skipped").length,
+        failed: results.filter(row => row.status === "failed").length,
+        pending: results.filter(row => row.status === "pending").length}) +
+        (batch.cancelled ? " · " + t("已取消 {count} 条", {count: results.filter(row => row.status === "cancelled").length}) : "");
+    const total = Math.max(1, batch.total), done = Math.min(completed, total);
+    const fraction = backingUp && batch.current?.bytes_total ? Math.min(.99, batch.current.bytes_done / batch.current.bytes_total) : 0;
+    const percent = Math.floor((done + fraction) / total * 100);
+    const processed = t("已处理 {done} / {total} 条", {done, total: batch.total});
+    $("#batchStatus").textContent = (batch.running ? `${processed} · ${percent}%` : summary + ` · ${percent}%`) + " ↗";
+    $("#batchProcessed").textContent = processed;
+    $("#batchPercent").textContent = `${percent}%`;
+    ["#batchMeter", "#batchInlineMeter"].forEach(selector => {
+      $(selector).max = total; $(selector).value = done + fraction;
+      $(selector).setAttribute("aria-valuetext", `${processed} · ${percent}%`);
+    });
+    const actions = {archive: "归档", unarchive: "取消归档", backup: "备份", delete: "删除", suggested: "按建议处理"};
+    $("#batchCurrent").textContent = batch.running ? batch.current
+      ? t("当前：{action} · {title}", {action: t(actions[batch.current.action] || actions[batch.action]), title: batch.current.title})
+      : t("正在准备下一条…") : t("处理已结束，逐条结果如下。");
+    if (backingUp && batch.current?.bytes_total) $("#batchCurrent").textContent += " · " +
+      t("当前文件：{done} / {total}", {done: bytes(batch.current.bytes_done), total: bytes(batch.current.bytes_total)});
+    $("#batchProgress").textContent = `${t(actions[batch.action])} · ${summary}`;
+    const list = $("#batchResults"); list.replaceChildren();
+    const statuses = {success: "已完成", skipped: "已跳过", failed: "失败", pending: "待核实", cancelled: "已取消"};
+    for (const result of results) {
+      const row = node("div", "backup-row batch-result");
+      const copy = node("div", "backup-copy");
+      copy.append(node("strong", "", result.title));
+      copy.append(node("p", `batch-result-state ${result.status}`, `${result.action ? t(actions[result.action]) + " · " : ""}${t(statuses[result.status])}`));
+      if (result.error) copy.append(node("p", "", errorText(new Error(result.error))));
+      if (result.status === "pending") copy.append(node("p", "", t("Codex 已接收操作，重新扫描尚未确认，请刷新查看。")));
+      row.append(copy);
+      if (result.backup?.download_url) {
+        const link = node("a", "button", t("下载备份")); link.href = result.backup.download_url; row.append(link);
+      }
+      list.append(row);
+    }
+  }
+  async function followBatch() {
+    while (state.batch?.running) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      try {
+        state.batch = await api(`/api/batch-status?job=${encodeURIComponent(state.batch.job)}`);
+        renderBatch();
+      } catch (error) {
+        if (error.message === "unknown_batch") {
+          state.batch.running = false; state.busy = false;
+          renderBatch(); renderList(); renderReader(); notice(errorText(error), null, true); return;
+        }
+        notice(t("暂时无法读取进度，正在重试；操作可能仍在进行。"), null, true);
+      }
+    }
+    try {
+      const result = await api("/api/library"); state.catalog = result.catalog;
+      for (const row of state.batch.results) if (row.status === "success") state.checked.delete(row.session_id);
+      if (!selectedRecord()) { state.selected = null; state.detail = null; $(".workspace").classList.remove("reading"); }
+      renderProjects();
+      notice(t(state.batch.cancelled ? "备份已取消，已完成的备份保留，未完成的文件已清理。" : "批量操作已结束，点击列表上方的结果查看详情。"));
+    } catch (error) { notice(errorText(error), null, true); }
+    finally { state.busy = false; renderList(); renderReader(); }
+  }
+  async function runBatch(action, ids = [...state.checked]) {
+    if (state.busy || !ids.length) return;
+    if (action === "backup" && !state.backup_location?.configured) return openBackupLocation(ids);
+    $("#notice").hidden = true;
+    state.busy = true; renderList(); renderReader();
+    try {
+      state.batch = await api("/api/batch-action", {session_ids: ids, action});
+      renderBatch(); $("#batchDialog").showModal();
+      await followBatch();
+    } catch (error) { state.busy = false; renderList(); renderReader(); notice(errorText(error), null, true); }
+  }
+  async function cancelBackup() {
+    if (!state.batch?.running || state.batch.action !== "backup" || state.batch.cancel_requested) return;
+    try {
+      state.batch = await api("/api/backup-cancel", {job: state.batch.job});
+      renderBatch();
+    } catch (error) { notice(errorText(error), null, true); }
+  }
+  function renderBackupLocation() {
+    $("#backupLocationText").textContent = state.backup_location?.directory || "";
+    $("#changeBackupLocation").disabled = state.busy;
+  }
+  function openBackupLocation(ids = null) {
+    pendingBackup = ids;
+    $("#themeSettings").hidden = !!ids;
+    $("#cancelBackupLocation").textContent = t(ids ? "取消" : "关闭");
+    $("#backupLocationTitle").textContent = t(ids ? "选择备份保存位置" : "设置");
+    $("#backupLocationDescription").textContent = t(ids ? "首次手动备份前，请选择保存文件夹。之后可在首页的“设置”中更改。" : "设置手动备份的保存文件夹。更改后，已有备份仍保留在原处。");
+    $("#backupDirectory").value = state.backup_location?.directory || "";
+    $("#backupLocationError").textContent = "";
+    $("#saveBackupLocation").textContent = t(ids ? "使用此位置并开始备份" : "保存备份位置");
+    $("#backupLocationDialog").showModal();
+  }
+  async function searchContent(event) {
+    event.preventDefault();
+    const query = $("#searchInput").value.trim();
+    if (query.length < 2) { $("#searchStatus").textContent = t("正文搜索至少输入两个字或字符"); return; }
+    const request = ++state.searchRequest;
+    state.query = query; state.hits.clear(); state.search = "running";
+    $("#searchStatus").textContent = t("正在搜索聊天正文…");
+    renderList();
+    try {
+      const {job_id: job} = await api("/api/search", {query});
+      while (request === state.searchRequest) {
+        const status = await api(`/api/search-archived-content/status?job=${encodeURIComponent(job)}`);
+        if (request !== state.searchRequest) return;
+        if (status.status === "error") throw new Error(status.error);
+        if (status.status === "complete") {
+          state.hits = new Map(status.result.matches.map(match => [match.session_id, match.excerpts]));
+          state.search = "complete";
+          $("#searchStatus").textContent = t(status.result.limited ? "正文匹配至少 {count} 条，请缩小关键词范围" : "正文匹配 {count} 条会话", {count: state.hits.size});
+          renderList(); renderMessages(); return;
+        }
+        $("#searchStatus").textContent = t("已搜索 {scanned} / {total} 条", status);
         await new Promise(resolve => setTimeout(resolve, 350));
       }
-      if (!data) throw new Error(t("正文搜索超时，请缩小关键词范围"));
-      state.contentSearch = {query: query.toLowerCase(), byId: new Map(data.matches.map(item => [item.session_id, item]))};
-      state.explorerVisibleLimit = 50;
-      renderExplorer();
-      status.textContent = data.matches.length ? t("正文搜索完成：{count} 条归档会话命中。", {count: data.matches.length}) : t("没有找到“{query}”。", {query});
-    } catch (error) {
-      state.contentSearch = null; renderExplorer(); status.textContent = t("正文搜索失败：{error}", {error: labelFor(error.message)});
-    } finally {
-      button.disabled = false; button.textContent = t("搜索归档正文");
+    } catch (error) { if (request === state.searchRequest) $("#searchStatus").textContent = errorText(error); }
+  }
+  function renderProjects() {
+    const select = $("#projectSelect"), previous = select.value;
+    const projects = [...new Set(state.catalog.sessions.map(record => record.cwd || ""))].filter(Boolean).sort();
+    select.replaceChildren(node("option", "", t("全部项目")));
+    select.firstElementChild.value = "";
+    for (const project of projects) { const option = node("option", "", project); option.value = project; select.append(option); }
+    select.value = projects.includes(previous) ? previous : "";
+  }
+  function renderBackups() {
+    const list = $("#backupsList"); list.replaceChildren();
+    if (!state.backups.length) list.append(node("p", "empty-copy", t("还没有备份。打开会话后点击“备份”，即可保存在这里。")));
+    for (const backup of state.backups) {
+      const row = node("article", "backup-row");
+      const copy = node("div", "backup-copy");
+      copy.append(node("strong", "", backup.title), node("p", "", `${formatDate(backup.created_at)} · ${bytes(backup.size_bytes)}`), node("p", "backup-path", backup.directory || ""));
+      const actions = node("div", "backup-actions");
+      const download = node("a", "button", t("下载")); download.href = backup.download_url;
+      const restore = node("button", "", t(backup.can_restore ? "恢复会话" : "会话仍存在"));
+      restore.disabled = state.busy || !backup.can_restore || state.capabilities.demo;
+      restore.addEventListener("click", () => restoreBackup(backup.filename));
+      actions.append(download, restore); row.append(copy, actions); list.append(row);
     }
   }
-
-  function detailMetadata(session) {
-    const details = el("details", "technical-details");
-    const list = el("dl", "detail-grid");
-    details.append(el("summary", "", t("技术详情")));
-    [
-      ["Session ID", session.id], [t("现状"), labelFor(session.actual_state)], [t("建议"), labelFor(session.recommendation)],
-      [t("计划"), actionLabel(session.planned_action)], [t("闲置"), t("{count} 天", {count: Number(session.age_days || 0)})], [t("占用"), humanBytes(session.size_bytes)],
-      [t("置顶"), session.pinned ? t("是") : labelFor(session.pin_status)], [t("永久保护"), session.permanent_protection ? t("是") : t("否")],
-      [t("父子依赖"), session.execution_blocker ? t("{count} 条 · {reason}", {count: session.relation_count, reason: labelFor(session.execution_blocker)}) : String(session.relation_count || 0)],
-      [t("真实用户轮次"), session.conversation_scanned ? String(session.business_turns) : t("尚未完整扫描")],
-      [t("Codex 复核"), session.semantic_review ? `${labelFor(session.semantic_review.label)} · ${Math.round(100 * session.semantic_review.confidence)}%` : t("尚未复核")],
-      [t("项目"), session.cwd || "—"], [t("日志"), session.rollout_path || "—"], [t("判断依据"), (session.recommendation_reasons || []).map(labelFor).join(i18n.locale() === "en" ? ", " : "、") || "—"]
-    ].forEach(([key, value]) => list.append(el("dt", "", key), el("dd", "", String(value))));
-    details.append(list);
-    return details;
+  function renderTrashSelection() {
+    const total = state.trash.length, count = state.trashChecked.size;
+    $("#trashSelectAll").checked = total > 0 && count === total;
+    $("#trashSelectAll").indeterminate = count > 0 && count < total;
+    $("#trashSelectAll").disabled = state.busy || !total || state.capabilities.demo;
+    $("#trashSelectedCount").textContent = t("已选 {count} 条", {count});
+    $("#purgeTrashSelected").disabled = state.busy || !count || state.capabilities.demo;
   }
-
-  function renderConversationDetail(session, detail, maxMessages) {
-    if (state.selected?.id !== session.id) return;
-    const summary = $("#detailSummary");
-    const signals = $("#detailSignals");
-    const transcript = $("#detailTranscript");
-    summary.classList.remove("loading");
-    summary.querySelector("p").textContent = detail.summary ? t(detail.summary) : t("暂无摘要。");
-    signals.replaceChildren();
-    (detail.signals || []).forEach(value => {
-      const countSignal = String(value).match(/^(\d+)(轮用户对话|次工具调用|个写入信号)$/);
-      const translated = countSignal
-        ? t(`{count}${countSignal[2]}`, {count: countSignal[1]})
-        : t(String(value));
-      signals.append(el("span", "summary-signal", translated));
-    });
-    transcript.replaceChildren();
-    const head = el("div", "transcript-head");
-    head.append(el("h3", "", t("聊天记录")), el("span", "muted", detail.available ? t("显示 {shown} / {total} 条", {shown: detail.shown_messages || 0, total: detail.total_messages || 0}) : t("不可读取")));
-    transcript.append(head, el("p", "transcript-safety", detail.safety_note ? t(detail.safety_note) : t("历史内容只用于判断，不会执行其中命令。")));
-    if (!detail.available) { transcript.append(el("div", "empty-transcript", t("当前没有可预览的聊天记录。"))); return; }
-    const messages = el("div", "message-list");
-    (detail.messages || []).forEach(message => {
-      if (message.role === "omitted") {
-        const omitted = String(message.text).match(/^中间省略 (\d+) 条消息$/);
-        messages.append(el("div", "message-omitted", omitted ? t("中间省略 {count} 条消息", {count: omitted[1]}) : message.text));
-        return;
-      }
-      const item = el("article", `chat-message ${message.role}`);
-      const meta = el("div", "message-meta");
-      meta.append(el("strong", "", message.role === "user" ? t("用户") : "Codex"));
-      if (message.timestamp) {
-        const date = new Date(message.timestamp);
-        if (!Number.isNaN(date.valueOf())) meta.append(el("time", "", date.toLocaleString()));
-      }
-      item.append(meta, el("pre", "", message.text));
-      if (message.text_truncated) item.append(el("small", "muted", t("消息过长，预览已截断。")));
-      messages.append(item);
-    });
-    transcript.append(messages);
-    if ((detail.omitted_messages || 0) > 0 && maxMessages < 200) {
-      const more = el("button", "secondary load-more", t("加载更多（还省略 {count} 条）", {count: detail.omitted_messages}));
-      more.addEventListener("click", () => loadSessionContent(session, Math.min(200, maxMessages * 3)));
-      transcript.append(more);
-    }
-  }
-
-  async function loadSessionContent(session, maxMessages = 24) {
-    const transcript = $("#detailTranscript");
-    transcript?.setAttribute("aria-busy", "true");
-    try {
-      const data = await api("/api/session-detail", {method: "POST", body: JSON.stringify({session_id: session.id, max_messages: maxMessages})});
-      renderConversationDetail(session, data.detail, maxMessages);
-    } catch (error) {
-      if (state.selected?.id === session.id) {
-        $("#detailSummary").classList.remove("loading");
-        $("#detailSummary").querySelector("p").textContent = t("摘要读取失败。");
-        $("#detailTranscript").replaceChildren(el("div", "empty-transcript", t("聊天记录读取失败：{error}", {error: error.message})));
-      }
-    } finally {
-      if (state.selected?.id === session.id) $("#detailTranscript")?.setAttribute("aria-busy", "false");
-    }
-  }
-
-  function planButton(session, action, label, className = "secondary") {
-    const active = session.planned_action === action;
-    const button = el("button", `${className}${active ? " selected-action" : ""}`, active ? t("取消{label}", {label}) : label);
-    button.addEventListener("click", () => plan(session.id, active ? null : action));
-    return button;
-  }
-
-  function showDetail(session) {
-    state.lastFocused = document.activeElement;
-    state.selected = session;
-    const detailTitle = $("#detailTitle");
-    detailTitle.textContent = compactTitle(session.title, 96);
-    detailTitle.title = session.title || t("(无标题)");
-    const body = $("#detailBody");
-    const summary = el("section", "detail-summary loading"); summary.id = "detailSummary";
-    const summaryHead = el("div", "summary-head");
-    summaryHead.append(el("h3", "", t("快速摘要")), el("span", "summary-source", t("本地规则")));
-    summary.append(summaryHead, el("p", "", t("正在读取对应聊天日志…")));
-    const signals = el("div", "summary-signals"); signals.id = "detailSignals"; summary.append(signals);
-    const transcript = el("section", "transcript"); transcript.id = "detailTranscript"; transcript.setAttribute("aria-live", "polite");
-    transcript.append(el("div", "empty-transcript", t("正在加载聊天记录…")));
-    const actions = el("section", "drawer-actions");
-    const executionLocked = state.manifests.some(manifest => ["ready", "running"].includes(manifest.status));
-    if (executionLocked) {
-      actions.append(
-        el("h3", "drawer-action-title", t("执行单已锁定")),
-        el("p", "field-status", t("执行单已经生成；为避免确认后状态变化，这里暂时只读。"))
-      );
-      const reviewPlan = el("button", "primary", t("返回执行计划"));
-      reviewPlan.addEventListener("click", () => { closeDrawer(); switchView("queue"); });
-      actions.append(reviewPlan);
-      body.replaceChildren(summary, actions, transcript, detailMetadata(session));
-      const drawer = $("#drawer");
-      drawer.inert = false; drawer.classList.add("open"); drawer.setAttribute("aria-hidden", "false");
-      $("#drawerScrim").classList.add("open"); $("#drawerScrim").setAttribute("aria-hidden", "false");
-      document.body.classList.add("modal-open");
-      $("#closeDrawer").focus();
-      loadSessionContent(session);
-      return;
-    }
-    actions.append(el("h3", "drawer-action-title", t("选择下一步")));
-    if (session.actual_state === "archived") {
-      const unarchive = el("button", "secondary", t("取消归档"));
-      unarchive.disabled = !state.capabilities.official_unarchive || Boolean(session.state_conflict);
-      if (unarchive.disabled) unarchive.title = t(session.state_conflict ? "状态冲突时不能取消归档" : "当前 Codex CLI 不支持取消归档");
-      unarchive.addEventListener("click", () => unarchiveSession(session, unarchive));
-      actions.append(unarchive);
-    }
-    const protect = el("button", "secondary", session.permanent_protection ? t("解除锁定") : t("锁定此会话，不参与整理"));
-    protect.addEventListener("click", () => toggleProtect(session.id, !session.permanent_protection));
-    actions.append(protect);
-    if (["cold", "quarantine"].includes(session.actual_state)) {
-      const restore = el("button", "secondary", t("退出 Codex 并恢复"));
-      restore.disabled = !state.capabilities.indexed_restore_to_codex;
-      const restoreReason = state.capabilities.reason_code ? labelFor(state.capabilities.reason_code) : t(state.capabilities.reason || "当前机器还没有通过真实恢复闭环验证，恢复按钮保持禁用");
-      if (restore.disabled) restore.title = restoreReason;
-      restore.addEventListener("click", () => launchRestore(session.id));
-      actions.append(restore);
-      if (restore.disabled) {
-        actions.append(el("small", "field-status restore-gate-help", `${restoreReason} ${t("请按 docs/VERIFICATION.md 完成一次“运行中 → 退出 → 恢复”的真实验证。")}`));
-      }
-    }
-    if (session.actual_state === "quarantine" && session.purge_eligible) {
-      const purge = el("button", "danger-button", t("永久删除"));
-      purge.addEventListener("click", () => openFinalConfirm({
-        title: t("确认永久删除隔离包？"),
-        body: t("只保留脱敏审计记录。"),
-        warning: t("删除后无法恢复。"),
-        confirmLabel: t("确认永久删除"),
-        trigger: purge,
-        onConfirm: () => launchPurge({session_id: session.id})
-      }));
-      actions.append(purge);
-    }
-    const actionButtonsShown = session.actual_state === "archived" && !planBlocked(session) && !session.relation_count;
-    if (actionButtonsShown) {
-      actions.append(
-        planButton(session, "cold_archive", t("冷存档")),
-        planButton(session, "quarantine", t("隔离 14 天")),
-        planButton(session, "permanent_delete", t("永久删除"), "danger-button")
-      );
-    }
-    const currentPlanAlreadyShown = actionButtonsShown && ["cold_archive", "quarantine", "permanent_delete"].includes(session.planned_action);
-    if (session.planned_action && !currentPlanAlreadyShown) {
-      const clearPlan = el("button", "secondary", t("清除旧计划"));
-      clearPlan.addEventListener("click", () => plan(session.id, null));
-      actions.append(clearPlan);
-    }
-    body.replaceChildren(summary, actions, transcript, detailMetadata(session));
-    const drawer = $("#drawer");
-    drawer.inert = false; drawer.classList.add("open"); drawer.setAttribute("aria-hidden", "false");
-    $("#drawerScrim").classList.add("open"); $("#drawerScrim").setAttribute("aria-hidden", "false");
-    document.body.classList.add("modal-open");
-    $("#closeDrawer").focus();
-    loadSessionContent(session);
-  }
-
-  function closeDrawer() {
-    const drawer = $("#drawer");
-    drawer.classList.remove("open"); drawer.setAttribute("aria-hidden", "true"); drawer.inert = true;
-    $("#drawerScrim").classList.remove("open"); $("#drawerScrim").setAttribute("aria-hidden", "true");
-    document.body.classList.remove("modal-open");
-    if (state.lastFocused?.isConnected) state.lastFocused.focus();
-  }
-
-  async function plan(id, action) {
-    try {
-      const data = await api("/api/plan", {method: "POST", body: JSON.stringify({session_id: id, action})});
-      state.catalog = data.catalog; applyExecutionState(data.execution_state);
-      renderAll(); closeDrawer(); await loadAutoPreview();
-      toast(action ? t("已加入计划：{action}", {action: actionLabel(action)}) : t("已取消计划"));
-    } catch (error) { toast(labels[error.message] ? labelFor(error.message) : t("计划失败：{error}", {error: error.message})); }
-  }
-
-  async function toggleProtect(id, enabled) {
-    try {
-      const data = await api("/api/protect", {method: "POST", body: JSON.stringify({session_id: id, enabled})});
-      state.catalog = data.catalog; applyExecutionState(data.execution_state);
-      renderAll(); closeDrawer(); await loadAutoPreview();
-      toast(enabled ? t("已锁定，不会再进入整理建议") : t("已解除锁定"));
-    } catch (error) { toast(t("操作失败：{error}", {error: error.message})); }
-  }
-
-  async function unarchiveSession(session, button) {
-    button.disabled = true;
-    button.textContent = t("正在取消归档…");
-    try {
-      const data = await api("/api/unarchive", {method: "POST", body: JSON.stringify({session_id: session.id})});
-      state.catalog = data.catalog; applyExecutionState(data.execution_state);
-      renderAll(); closeDrawer(); await loadAutoPreview();
-      toast(t("已取消归档，Session 已回到 Codex"));
-    } catch (error) {
-      button.disabled = false;
-      button.textContent = t("取消归档");
-      toast(t("取消归档失败：{error}", {error: labelFor(error.message)}));
-    }
-  }
-
-  function closeFinalConfirm() {
-    const dialog = $("#finalConfirmDialog");
-    dialog.classList.remove("open"); dialog.setAttribute("aria-hidden", "true"); dialog.inert = true;
-    $("#finalConfirmScrim").classList.remove("open"); $("#finalConfirmScrim").setAttribute("aria-hidden", "true");
-    const target = state.confirmDialog?.trigger?.isConnected ? state.confirmDialog.trigger : null;
-    state.confirmDialog = null;
-    if (!$("#drawer").classList.contains("open")) document.body.classList.remove("modal-open");
-    target?.focus();
-  }
-
-  function openFinalConfirm({title, body, warning, acknowledgement, confirmLabel, onConfirm, trigger}) {
-    const dialog = $("#finalConfirmDialog");
-    $("#finalConfirmTitle").textContent = title;
-    $("#finalConfirmBody").textContent = body;
-    const warningNode = $("#finalConfirmWarning");
-    warningNode.className = warning ? "danger-callout" : "hidden"; warningNode.textContent = warning || "";
-    const ackWrap = $("#finalConfirmAcknowledgement");
-    const ack = $("#finalConfirmAck");
-    ack.checked = !acknowledgement; ackWrap.classList.toggle("hidden", !acknowledgement); $("#finalConfirmAckText").textContent = acknowledgement || "";
-    const commit = $("#commitFinalConfirm");
-    commit.textContent = confirmLabel; commit.disabled = Boolean(acknowledgement);
-    const update = () => { commit.disabled = Boolean(acknowledgement) && !ack.checked; };
-    ack.onchange = update;
-    state.confirmDialog = {trigger, onConfirm};
-    commit.onclick = async () => {
-      if (commit.disabled || !state.confirmDialog) return;
-      commit.disabled = true;
-      const completed = await state.confirmDialog.onConfirm(ack.checked);
-      if (completed) closeFinalConfirm(); else update();
-    };
-    dialog.inert = false; dialog.classList.add("open"); dialog.setAttribute("aria-hidden", "false");
-    $("#finalConfirmScrim").classList.add("open"); $("#finalConfirmScrim").setAttribute("aria-hidden", "false");
-    document.body.classList.add("modal-open");
-    setTimeout(() => $("#cancelFinalConfirm").focus(), 0);
-  }
-
-  function permanentDeleteStatus(session) {
-    if (session.planned_action === "permanent_delete" || (session.planned_action === "purge_after_quarantine" && session.actual_state === "archived")) return t("等待永久删除确认");
-    if (session.actual_state !== "quarantine") return t("等待进入 14 天隔离");
-    if (session.purge_eligible) return t("隔离已到期");
-    if (session.quarantine_remaining_seconds != null) return t("还剩 {time}", {time: countdown(session.quarantine_remaining_seconds)});
-    return t("隔离时间待校验");
-  }
-
-  function renderQueue() {
-    const list = $("#queueList"); list.replaceChildren();
-    const plans = state.catalog.sessions.filter(session => session.planned_action);
-    const currentPlans = plans.filter(session => destructiveActions.has(session.planned_action));
-    const legacyPlans = plans.filter(session => !destructiveActions.has(session.planned_action));
-    const actionable = currentPlans.filter(session => !session.execution_blocker);
-    const executionActive = state.manifests.some(manifest => ["ready", "running"].includes(manifest.status));
-    const appendPlan = (container, session, legacy = false) => {
-      const item = el("article", `queue-item${session.execution_blocker ? " blocked" : ""}${legacy ? " legacy" : ""}`);
-      const status = legacy ? t("旧版标记，仅记录，不会在这里执行") : session.execution_blocker ? labelFor(session.execution_blocker) :
-        ["permanent_delete", "purge_after_quarantine"].includes(session.planned_action) ? permanentDeleteStatus(session) : actionLabel(session.planned_action);
-      const title = el("strong", "", compactTitle(session.title || session.id)); title.title = session.title || session.id;
-      item.append(title, el("span", "", status), el("span", "", humanBytes(session.size_bytes)));
-      if (session.actual_state === "quarantine" && session.purge_eligible) {
-        const purge = el("button", "danger-button", t("永久删除")); purge.addEventListener("click", () => requestPurge(session.id)); item.append(purge);
-      }
-      const cancel = el("button", "secondary", t("取消计划")); cancel.addEventListener("click", () => plan(session.id, null)); item.append(cancel);
-      container.append(item);
-    };
-    if (!executionActive) currentPlans.forEach(session => appendPlan(list, session));
-    if (!currentPlans.length && !state.manifests.length) {
-      const empty = el("section", "empty-state");
-      empty.append(el("h2", "", t("还没有可执行计划")), el("p", "muted", t("先去“会话”查看系统建议，加入计划后再回来确认。")));
-      const button = el("button", "", t("查看整理建议")); button.addEventListener("click", () => switchView("sessions")); empty.append(button); list.append(empty);
-    }
-    if (legacyPlans.length && !executionActive) {
-      const legacy = el("details", "panel legacy-plans");
-      legacy.append(el("summary", "", t("{count} 条旧版标记（不会执行）", {count: legacyPlans.length})));
-      const legacyList = el("div", "queue-list");
-      legacyPlans.forEach(session => appendPlan(legacyList, session, true));
-      legacy.append(legacyList); list.append(legacy);
-    }
-    $("#plannedBytes").textContent = humanBytes(actionable.reduce((sum, session) => sum + Number(session.size_bytes || 0), 0));
-    $("#planCount").textContent = String(currentPlans.length);
-    $("#prepareBtn").disabled = executionActive || !actionable.length;
-    $("#queueFooter").classList.toggle("hidden", executionActive || !currentPlans.length);
-    $("#capabilityNotice").textContent = executionActive
-      ? t("执行单已生成。原计划已锁定，不再重复显示；点击下方按钮后，助手会等待 Codex 完全退出再执行。")
-      : state.manifests.length && !currentPlans.length
-        ? t("操作已有结果。这里保留完成或失败凭证，不再显示已经收口的旧计划。")
-        : t("计划不会自动执行。确认单只会再核对一次置顶、父子关系、数据库和 Codex 进程；确认后直接生成执行单，不再弹第三层窗口。");
-    renderConfirmationSheet(); renderManifests();
-  }
-
-  function renderConfirmationSheet() {
-    const host = $("#confirmationSheet"); host.replaceChildren();
-    const sheet = state.confirmationSheet;
-    if (!sheet || (sheet.confirmed && state.manifests.length)) { host.classList.add("hidden"); return; }
-    host.classList.remove("hidden");
-    const panel = el("section", "confirmation-panel");
-    const head = el("div", "confirmation-head");
-    const title = el("div"); title.append(el("p", "eyebrow", "LOCAL OPERATION RECEIPT"), el("h2", "", t("本次操作确认单")));
-    head.append(title, el("span", "state-pill", sheet.confirmed ? t("待执行") : sheet.can_execute ? t("待确认") : t("存在阻塞"))); panel.append(head);
-    const metrics = el("div", "confirmation-metrics");
-    [[t("冷存档"), sheet.counts.cold_archive], [t("14 天隔离"), sheet.counts.quarantine], [t("永久删除"), sheet.counts.permanent_delete], [t("影响空间"), humanBytes(sheet.total_bytes)]]
-      .forEach(([label, value]) => { const item = el("div"); item.append(el("span", "", label), el("strong", "", String(value))); metrics.append(item); });
-    panel.append(metrics);
-    if (sheet.counts.permanent_delete) panel.append(el("div", "danger-callout", t("{count} 条会话会直接永久删除，不经过隔离期。", {count: sheet.counts.permanent_delete})));
-    if (sheet.warnings.length) {
-      const warning = el("section", "receipt-section warning-section");
-      warning.append(el("h3", "", t("{count} 条永久删除项可能重要", {count: sheet.warnings.length})), el("p", "muted", t("请逐条看完，再决定是否继续。")));
-      const rows = el("div", "receipt-rows");
-      sheet.warnings.forEach(entry => {
-        const row = el("article", "receipt-row"); row.append(el("strong", "", entry.title), el("span", "", entry.reasons.join("；")), el("small", "", humanBytes(entry.size_bytes))); rows.append(row);
+  function renderTrash() {
+    const existing = new Set(state.trash.map(row => row.filename));
+    state.trashChecked.forEach(name => {if (!existing.has(name)) state.trashChecked.delete(name);});
+    const list = $("#trashList"); list.replaceChildren();
+    if (!state.trash.length) list.append(node("p", "empty-copy", t("回收站为空。之后删除的会话会在这里保留 30 天，旧副本仍在备份记录中。")));
+    for (const item of state.trash) {
+      const row = node("article", "backup-row trash-item");
+      const checkbox = node("input"); checkbox.type = "checkbox"; checkbox.checked = state.trashChecked.has(item.filename);
+      checkbox.disabled = state.busy || state.capabilities.demo;
+      checkbox.setAttribute("aria-label", t("选择会话：{title}", {title: item.title}));
+      checkbox.addEventListener("change", () => {
+        checkbox.checked ? state.trashChecked.add(item.filename) : state.trashChecked.delete(item.filename); renderTrashSelection();
       });
-      warning.append(rows); panel.append(warning);
+      const copy = node("div", "backup-copy");
+      copy.append(node("strong", "", item.title), node("p", "", `${t("删除于 {date}", {date: formatDate(item.deleted_at)})} · ${t("剩余 {days} 天", {days: item.remaining_days})} · ${bytes(item.size_bytes)}`));
+      const actions = node("div", "backup-actions");
+      const restore = node("button", "", t(item.can_restore ? "恢复会话" : "会话仍存在"));
+      restore.disabled = state.busy || !item.can_restore || state.capabilities.demo;
+      restore.addEventListener("click", () => restoreTrash(item.filename));
+      const purge = node("button", "danger", t("永久删除")); purge.disabled = state.busy || state.capabilities.demo;
+      purge.addEventListener("click", () => purgeTrash([item.filename]));
+      actions.append(restore, purge); row.append(checkbox, copy, actions); list.append(row);
     }
-    if (sheet.blockers.length) {
-      const blocked = el("section", "receipt-section blocker-section");
-      blocked.append(el("h3", "", t("{count} 个阻塞需要先解决", {count: sheet.blockers.length})));
-      const list = el("ul"); sheet.blockers.forEach(entry => list.append(el("li", "", labels[entry.code] ? labelFor(entry.code) : (entry.message || entry.code)))); blocked.append(list); panel.append(blocked);
-    }
-    const confirm = el("section", "local-confirm");
-    confirm.append(el("p", "", sheet.confirmed ? t("已生成执行单。接下来只需在执行计划里点击启动。") : t("确认后会直接生成执行单，不再弹出额外窗口。")));
-    if (sheet.warnings.length) {
-      const ack = el("label", "acknowledge inline");
-      const checkbox = el("input");
-      checkbox.type = "checkbox";
-      checkbox.id = `receipt-ack-${sheet.sheet_id}`;
-      const text = el("span", "", t("我已逐条检查可能重要的会话，仍确认继续"));
-      ack.append(checkbox, text);
-      confirm.append(ack);
-    }
-    const button = el("button", "", sheet.confirmed ? t("已生成执行单") : t("生成执行单"));
-    const acknowledgeBox = sheet.warnings.length ? null : true;
-    const updateDisabled = () => {
-      const checked = sheet.warnings.length ? Boolean($("#confirmationSheet")?.querySelector(`#receipt-ack-${CSS.escape(sheet.sheet_id)}`)?.checked) : true;
-      button.disabled = sheet.confirmed || !sheet.can_execute || !checked;
-    };
-    updateDisabled();
-    if (sheet.warnings.length) {
-      const checkbox = confirm.querySelector(`#receipt-ack-${CSS.escape(sheet.sheet_id)}`);
-      checkbox.addEventListener("change", updateDisabled);
-    }
-    button.addEventListener("click", () => confirmOperationSheet(sheet, sheet.warnings.length ? Boolean(confirm.querySelector(`#receipt-ack-${CSS.escape(sheet.sheet_id)}`)?.checked) : false));
-    confirm.append(button);
-    panel.append(confirm); host.append(panel);
+    renderTrashSelection();
   }
-
-  function renderManifests() {
-    const list = $("#manifestList"); list.replaceChildren();
-    state.manifests.forEach(manifest => {
-      const item = el("article", "manifest-item");
-      const actionText = manifest.action === "restore" ? t("恢复到 Codex") : actionLabel(manifest.action);
-      const isDirectManifest = manifest.kind === "manifest";
-      const isRestore = manifest.action === "restore";
-      const isLaunchable = (isDirectManifest || isRestore) && manifest.status === "ready";
-      item.append(el("strong", "", t("{action} · {count} 条 · {bytes}", {action: actionText, count: manifest.session_ids.length, bytes: humanBytes(manifest.bytes)})));
-      item.append(el("span", "", labelFor(manifest.status)));
-      if (manifest.detail) item.append(el("small", "muted", labelFor(manifest.detail)));
-      if (Array.isArray(manifest.volume_notes) && manifest.volume_notes.length) {
-        item.append(el("small", "muted", manifest.volume_notes.map(note => labelFor(note)).join("；")));
-      }
-      if (isDirectManifest || isRestore) {
-        const launch = el("button", "", isRestore ? t("退出 Codex 并恢复") : t("退出 Codex 并执行"));
-        launch.disabled = !isLaunchable;
-        launch.addEventListener("click", () => isRestore ? launchRestore(manifest.session_ids[0]) : launchAndQuitHelper(manifest));
-        item.append(launch);
-      }
-      item.append(el("small", "muted", manifest.action === "permanent_delete" ? t("没有恢复期。失败时使用临时副本回滚。") : manifest.action === "restore" ? t("只有通过真实闭环验证的机器，才会启用恢复按钮。") : manifest.kind === "purge" ? t("删除后只保留脱敏审计记录。") : t("执行助手会等待 Codex 完全退出。")));
-      list.append(item);
-    });
-    state.purgeRequests.forEach(request => {
-      const item = el("article", "manifest-item purge-confirm");
-      item.append(el("strong", "", t("隔离到期 · {id}", {id: request.session_id})));
-      const launch = el("button", "danger-button", t("永久删除"));
-      launch.addEventListener("click", () => openFinalConfirm({title: t("确认永久删除隔离包？"), body: t("只保留脱敏审计记录。"), warning: t("删除后无法恢复。"), confirmLabel: t("确认永久删除"), trigger: launch, onConfirm: () => launchPurge(request)}));
-      item.append(launch); list.append(item);
-    });
-  }
-
-  async function requestPurge(sessionId) {
+  async function restoreTrash(filename) {
+    if (state.busy || !filename) return;
+    state.busy = true; renderTrash(); renderList(); renderReader();
+    $("#trashStatus").textContent = t("正在恢复会话…");
+    $("#trashMeter").hidden = false; $("#trashMeter").max = 1; $("#trashMeter").removeAttribute("value");
     try {
-      const data = await api("/api/purge-request", {method: "POST", body: JSON.stringify({session_id: sessionId})});
-      state.purgeRequests = [...state.purgeRequests.filter(item => item.session_id !== sessionId), data.request];
-      renderManifests(); toast(t("已准备最终确认"));
-    } catch (error) { toast(t("无法准备永久删除：{error}", {error: labelFor(error.message)})); }
+      const result = await api("/api/trash-restore", {filename});
+      state.trash = result.trash; state.catalog = result.catalog; renderProjects(); $("#trashMeter").value = 1;
+      $("#trashDialog").close();
+      notice(t(result.verified ? "会话已恢复" : "聊天文件已取回，但 Codex 尚未完成识别。备份已保留，请刷新后检查。"));
+      await selectSession(result.session_id);
+    } catch (error) { $("#trashMeter").hidden = true; $("#trashStatus").textContent = errorText(error); notice(errorText(error), null, true); }
+    finally { state.busy = false; renderTrash(); renderList(); renderReader(); }
   }
-
-  async function launchPurge(request) {
+  async function purgeTrash(filenames) {
+    if (state.busy || !filenames.length) return;
+    state.busy = true; renderTrash(); renderList(); renderReader();
+    $("#trashStatus").textContent = t("正在永久删除所选恢复副本…");
+    $("#trashMeter").hidden = false; $("#trashMeter").max = filenames.length; $("#trashMeter").removeAttribute("value");
     try {
-      const data = await api("/api/launch-purge", {method: "POST", body: JSON.stringify({session_id: request.session_id, second_confirmation: true})});
-      applyExecutionState(data.execution_state);
-      const refreshed = await api("/api/refresh", {method: "POST", body: "{}"});
-      state.catalog = refreshed.catalog; applyExecutionState(refreshed.execution_state); renderAll();
-      toast(t("永久删除助手已启动，PID {pid}", {pid: data.helper.pid})); return true;
-    } catch (error) { toast(t("永久删除未启动：{error}", {error: labelFor(error.message)})); return false; }
+      const result = await api("/api/trash-purge", {filenames}); state.trash = result.trash;
+      $("#trashMeter").value = result.results.length;
+      const success = result.results.filter(row => row.status === "success").length;
+      if (result.results.some(row => row.filename === state.undoFilename && row.status === "success")) { state.undoFilename = null; $("#notice").hidden = true; }
+      $("#trashStatus").textContent = t("永久删除 {success} 条，失败 {failed} 条。", {success, failed: result.results.length - success});
+    } catch (error) { $("#trashMeter").hidden = true; $("#trashStatus").textContent = errorText(error); }
+    finally { state.busy = false; renderTrash(); renderList(); renderReader(); }
   }
-
-  async function prepareConfirmationSheet() {
+  async function restoreBackup(filename) {
+    if (state.busy) return;
+    state.busy = true; renderBackups();
+    notice(t("正在恢复会话…"));
     try {
-      const data = await api("/api/confirmation-sheet", {method: "POST", body: "{}"});
-      state.confirmationSheet = data.sheet; applyExecutionState(data.execution_state); renderQueue();
-      $("#confirmationSheet").scrollIntoView({behavior: "smooth", block: "start"});
-    } catch (error) { toast(t("确认单生成失败：{error}", {error: labelFor(error.message)})); }
+      const result = await api("/api/restore-backup", {filename});
+      state.catalog = result.catalog; renderProjects(); renderList();
+      $("#backupsDialog").close();
+      notice(t(result.verified ? "会话已恢复" : "聊天文件已取回，但 Codex 尚未完成识别。备份已保留，请刷新后检查。"));
+      await selectSession(result.session_id);
+    } catch (error) { notice(errorText(error), null, true); }
+    finally { state.busy = false; renderBackups(); renderReader(); }
   }
-
-  async function confirmOperationSheet(sheet, warningsAcknowledged) {
-    try {
-      const data = await api("/api/confirm-sheet", {method: "POST", body: JSON.stringify({sheet_id: sheet.sheet_id, warnings_acknowledged: warningsAcknowledged, second_confirmation: true})});
-      sheet.confirmed = true; state.manifests = data.manifests; applyExecutionState(data.execution_state); renderQueue();
-      $("#manifestList").scrollIntoView({behavior: "smooth", block: "start"});
-      toast(t("已生成 {count} 个执行单", {count: state.manifests.length})); return true;
-    } catch (error) { toast(t("二次确认未通过：{error}", {error: labelFor(error.message)})); return false; }
-  }
-
-  async function launchAndQuitHelper(manifest) {
-    try {
-      const data = await api("/api/launch-and-quit", {method: "POST", body: JSON.stringify({manifest: manifest.path})});
-      applyExecutionState(data.execution_state);
-      const refreshed = await api("/api/refresh", {method: "POST", body: "{}"});
-      state.catalog = refreshed.catalog; applyExecutionState(refreshed.execution_state); renderAll();
-      if (data.manual_exit_required) toast(t("执行助手已启动（PID {pid}），请手动完全退出 Codex", {pid: data.helper.pid}));
-      else toast(t("执行助手已启动（PID {pid}），正在退出 Codex", {pid: data.helper.pid}));
-    } catch (error) { toast(t("执行助手未启动：{error}", {error: labelFor(error.message)})); }
-  }
-
-  async function launchRestore(sessionId) {
-    try {
-      const data = await api("/api/launch-restore", {method: "POST", body: JSON.stringify({session_id: sessionId})});
-      applyExecutionState(data.execution_state);
-      const refreshed = await api("/api/refresh", {method: "POST", body: "{}"});
-      state.catalog = refreshed.catalog; applyExecutionState(refreshed.execution_state); renderAll();
-      if (data.manual_exit_required) toast(t("恢复助手已启动（PID {pid}），请手动完全退出 Codex", {pid: data.helper.pid}));
-      else toast(t("恢复助手已启动（PID {pid}），正在退出 Codex", {pid: data.helper.pid}));
-    } catch (error) { toast(t("恢复未启动：{error}", {error: labelFor(error.message)})); }
-  }
-
-  function renderReviewMetrics() {
-    const summary = state.catalog.summary;
-    const node = $("#reviewMetrics"); node.replaceChildren();
-    [[t("已扫描"), summary.conversation_scanned || 0], [t("3 轮以内"), summary.short_conversations || 0], [t("Codex 已复核"), summary.codex_reviewed || 0], [t("一次性"), summary.codex_one_off || 0]]
-      .forEach(([label, value]) => node.append(el("span", "", `${label} ${value}`)));
-  }
-
-  async function prepareReviewBundle() {
-    const button = $("#prepareReviewBtn"); button.disabled = true; button.textContent = t("正在扫描…");
-    try {
-      const data = await api("/api/review-bundle", {method: "POST", body: JSON.stringify({max_turns: Number($("#reviewMaxTurns").value)})});
-      state.catalog = data.catalog; applyExecutionState(data.execution_state); renderAll();
-      const notice = $("#reviewBundleNotice"); notice.classList.remove("hidden");
-      notice.replaceChildren(el("strong", "", t("发现 {short} 条短对话，其中 {clean} 条没有写入或附件。", {short: data.summary.short_conversations, clean: data.summary.clean_one_off_candidates})), el("code", "", data.bundle_path), el("span", "", t("回到 Codex 输入“复核一次性对话”。")));
-    } catch (error) { toast(t("短对话扫描失败：{error}", {error: error.message})); }
-    finally { button.disabled = false; button.textContent = t("准备复核包"); }
-  }
-
-  function renderAuto() {
-    const preview = state.auto.preview;
-    if (!preview) return;
-    const summary = preview.summary;
-    const eligible = preview.proposals.filter(item => !item.blocked_reason);
-    const cold = eligible.filter(item => item.action === "cold_archive").length;
-    const quarantine = eligible.filter(item => item.action === "quarantine").length;
-    $("#autoHeadline").textContent = eligible.length ? t("建议整理 {count} 条旧会话", {count: eligible.length}) : t("当前没有需要自动整理的会话");
-    $("#autoSummary").textContent = eligible.length ? t("{cold} 条冷存档，{quarantine} 条先隔离 14 天。加入计划后仍需你确认才会执行。", {cold, quarantine}) : t("可以继续浏览全部会话，或调整闲置时间设置。");
-    $("#autoMetricGrid").replaceChildren(
-      metric(t("冷存档"), String(cold), t("保留内容，移出当前索引"), "violet"),
-      metric(t("先隔离"), String(quarantine), t("14 天内可恢复"), "amber"),
-      metric(t("涉及空间"), humanBytes(eligible.reduce((sum, item) => sum + Number(item.size_bytes || 0), 0)), t("按真实日志大小"), "blue")
-    );
-    const gate = $("#autoGateNotice");
-    gate.classList.toggle("hidden", preview.planning_allowed && preview.execution_ready);
-    gate.textContent = !preview.planning_allowed ? t("数据库识别存在歧义，现在只能浏览。") : !preview.execution_ready ? t("可以先加入计划；真正执行前需要刷新置顶状态。") : "";
-    const rows = $("#autoProposalRows"); rows.replaceChildren();
-    const visible = preview.proposals.slice(0, state.auto.visibleLimit);
-    visible.forEach(item => {
-      const row = el("tr", item.blocked_reason ? "blocked" : "");
-      row.classList.toggle("selected", state.auto.selected.has(item.session_id));
-      const checkCell = el("td");
-      const check = el("input"); check.type = "checkbox"; check.checked = state.auto.selected.has(item.session_id); check.disabled = Boolean(item.blocked_reason); check.setAttribute("aria-label", t("选择 {title}", {title: item.title}));
-      check.addEventListener("change", () => { if (check.checked) state.auto.selected.add(item.session_id); else state.auto.selected.delete(item.session_id); renderAuto(); });
-      const hit = el("label", "check-hit"); hit.append(check); checkCell.append(hit); row.append(checkCell);
-      const session = state.catalog.sessions.find(value => value.id === item.session_id);
-      const titleCell = el("td", "proposal-title"); const title = el("strong", "", compactTitle(item.title)); title.title = item.title;
-      titleCell.append(title, el("small", "", t("{id} · 闲置 {days} 天", {id: item.session_id, days: Number(session?.age_days || 0)}))); row.append(titleCell);
-      const action = el("td"); action.append(el("span", `action-pill ${item.action}`, actionLabel(item.action))); row.append(action);
-      const reasons = item.reasons.filter(reason => reason !== "pin_snapshot_unavailable_or_stale").map(labelFor);
-      if (item.blocked_reason) reasons.push(t("阻断：{reason}", {reason: labelFor(item.blocked_reason)}));
-      row.append(el("td", "proposal-reason", reasons.join(i18n.locale() === "en" ? ", " : "、") || t("规则命中")), el("td", "", humanBytes(item.size_bytes))); rows.append(row);
-    });
-    if (!preview.proposals.length) { const row = el("tr"); const cell = el("td", "muted", t("没有候选会话。") ); cell.colSpan = 5; row.append(cell); rows.append(row); }
-    $("#autoTableStatus").textContent = t("显示 {shown} / {total}（{eligible} 条可处理）", {shown: visible.length, total: preview.proposals.length, eligible: eligible.length});
-    $("#loadMoreAutoBtn").classList.toggle("hidden", visible.length >= preview.proposals.length);
-    const selected = preview.proposals.filter(item => state.auto.selected.has(item.session_id) && !item.blocked_reason);
-    $("#autoSelectedSummary").textContent = t("{count} 条 · {bytes}", {count: selected.length, bytes: humanBytes(selected.reduce((sum, item) => sum + item.size_bytes, 0))});
-    $("#applyAutoPlanBtn").disabled = !selected.length || !preview.planning_allowed;
-    $("#autoCount").textContent = String(eligible.length);
-  }
-
-  async function loadAutoPreview() {
-    $("#autoLoading").classList.remove("hidden");
-    try {
-      const data = await api("/api/auto-preview", {method: "POST", body: JSON.stringify({preset: "space"})});
-      state.auto.preview = data.preview;
-      state.auto.selected = new Set(data.preview.proposals.filter(item => item.selected).map(item => item.session_id));
-      renderAuto(); renderHome();
-    } catch (error) { toast(t("整理建议生成失败：{error}", {error: error.message})); }
-    finally { $("#autoLoading").classList.add("hidden"); }
-  }
-
-  function setAutoSelection(enabled) {
-    if (!state.auto.preview) return;
-    state.auto.selected = new Set(enabled ? state.auto.preview.proposals.filter(item => !item.blocked_reason).map(item => item.session_id) : []);
-    renderAuto();
-  }
-
-  async function applyAutoPlan() {
-    if (!state.auto.preview) return;
-    const items = state.auto.preview.proposals.filter(item => state.auto.selected.has(item.session_id) && !item.blocked_reason).map(item => ({session_id: item.session_id, action: item.action}));
-    try {
-      const data = await api("/api/auto-apply", {method: "POST", body: JSON.stringify({preset: "space", items})});
-      state.catalog = data.catalog; applyExecutionState(data.execution_state);
-      renderAll(); await loadAutoPreview(); switchView("queue");
-      toast(t("已加入 {count} 条计划，尚未移动或删除任何会话", {count: data.applied}));
-    } catch (error) { toast(labels[error.message] ? labelFor(error.message) : t("批量计划失败：{error}", {error: error.message})); }
-  }
-
-  async function clearAutoPlans() {
-    try {
-      const data = await api("/api/auto-clear", {method: "POST", body: "{}"});
-      state.catalog = data.catalog; applyExecutionState(data.execution_state);
-      renderAll(); await loadAutoPreview(); toast(t("已清除 {count} 条自动计划", {count: data.removed}));
-    } catch (error) { toast(t("清除失败：{error}", {error: error.message})); }
-  }
-
-  function renderAll() {
-    fillSelect($("#stateFilter"), state.catalog.sessions.map(session => session.actual_state));
-    fillSelect($("#recommendationFilter"), state.catalog.sessions.map(session => session.recommendation));
-    renderHome(); renderExplorer(); renderQueue(); renderReviewMetrics(); renderAuto();
-  }
-
-  async function refreshCatalog() {
-    const button = $("#refreshBtn"); button.disabled = true; button.textContent = t("刷新会话中…");
-    try {
-      const data = await api("/api/refresh", {method: "POST", body: "{}"});
-      state.catalog = data.catalog; applyExecutionState(data.execution_state);
-      renderAll(); await loadAutoPreview(); toast(t("已刷新本机会话"));
-    } catch (error) { toast(t("刷新失败：{error}", {error: error.message})); }
-    finally { button.disabled = false; button.textContent = t("刷新会话"); }
-  }
-
-  async function chooseColdStorageDirectory() {
-    const button = $("#chooseColdStorageBtn");
-    const status = $("#coldStorageStatus");
-    button.disabled = true;
-    button.textContent = t("选择中…");
-    status.textContent = t("正在打开系统文件夹选择器…");
-    try {
-      const data = await api("/api/select-directory", {method: "POST", body: "{}"});
-      if (!data.selected) {
-        status.textContent = t("已取消选择，原目录未更改。");
-        return;
-      }
-      $("#coldStorageDir").value = data.path;
-      $("#coldStorageDir").readOnly = true;
-      $("#editColdStorageBtn").textContent = t("手动输入（高级）");
-      status.textContent = t("已选择，可用空间 {bytes}。点击“保存设置”后生效。", {bytes: humanBytes(data.free_bytes)});
-    } catch (error) {
-      status.textContent = "";
-      toast(labels[error.message] ? labelFor(error.message) : t("目录选择失败：{error}", {error: error.message}));
-    } finally {
-      button.disabled = !state.capabilities.native_directory_picker;
-      button.textContent = t("选择目录");
-    }
-  }
-
-  function toggleColdStorageManualInput() {
-    const input = $("#coldStorageDir");
-    const button = $("#editColdStorageBtn");
-    input.readOnly = !input.readOnly;
-    button.textContent = input.readOnly ? t("手动输入（高级）") : t("完成输入");
-    $("#coldStorageStatus").textContent = input.readOnly
-      ? t("手动路径会在保存时校验。")
-      : t("请输入已存在且可写的完整目录路径，保存时会立即校验。");
-    if (!input.readOnly) input.focus();
-  }
-
-  function exportPlan() {
-    const plans = state.catalog.sessions.filter(session => session.planned_action).map(session => ({session_id: session.id, title: session.title, actual_state: session.actual_state, planned_action: session.planned_action, size_bytes: session.size_bytes, hard_protected: session.hard_protected}));
-    const blob = new Blob([JSON.stringify({schema_version: 1, generated_at: new Date().toISOString(), plans}, null, 2)], {type: "application/json"});
-    const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = "codex-session-plan.json"; link.click(); URL.revokeObjectURL(link.href);
-  }
-
-  async function initialize() {
-    const data = await api("/api/bootstrap");
-    state.csrf = data.csrf; state.catalog = data.catalog; state.settings = data.settings; state.capabilities = data.capabilities;
-    applyExecutionState(data.execution_state);
-    Object.entries(state.settings).forEach(([key, value]) => { const node = $(`[name="${key}"]`); if (node) node.value = value; });
-    const picker = $("#chooseColdStorageBtn");
-    picker.disabled = !state.capabilities.native_directory_picker;
-    if (picker.disabled) {
-      picker.title = t("当前系统不支持目录选择器");
-      $("#coldStorageDir").readOnly = false;
-      $("#editColdStorageBtn").classList.add("hidden");
-      $("#coldStorageStatus").textContent = t("当前系统不支持目录选择器，请手动输入完整路径。");
-    }
-    renderAll(); switchView("home"); await loadAutoPreview();
-  }
-
-  registerStaticTranslations();
-  translateStatic();
-  $$(".tab").forEach(node => node.addEventListener("click", () => switchView(node.dataset.view)));
-  $("#languageBtn").addEventListener("click", toggleLanguage);
-  $("#refreshBtn").addEventListener("click", refreshCatalog);
-  $("#chooseColdStorageBtn").addEventListener("click", chooseColdStorageDirectory);
-  $("#editColdStorageBtn").addEventListener("click", toggleColdStorageManualInput);
-  $("#openSessionsBtn").addEventListener("click", () => switchView("sessions"));
-  $("#openQueueBtn").addEventListener("click", () => switchView("queue"));
-  $("#selectAllAutoBtn").addEventListener("click", () => setAutoSelection(true));
-  $("#clearSelectionAutoBtn").addEventListener("click", () => setAutoSelection(false));
-  $("#applyAutoPlanBtn").addEventListener("click", applyAutoPlan);
-  $("#clearAutoPlansBtn").addEventListener("click", clearAutoPlans);
-  $("#loadMoreAutoBtn").addEventListener("click", () => { state.auto.visibleLimit += 25; renderAuto(); });
-  ["searchInput", "stateFilter", "recommendationFilter", "turnFilter", "riskFilter"].forEach(id => $("#" + id).addEventListener(id === "searchInput" ? "input" : "change", () => {
-    if (id === "searchInput") { $("#contentSearchStatus").classList.add("hidden"); state.contentSearch = null; }
-    state.explorerVisibleLimit = 50; renderExplorer();
-  }));
-  $("#searchContentBtn").addEventListener("click", searchArchivedContent);
-  $("#loadMoreExplorerBtn").addEventListener("click", () => { state.explorerVisibleLimit += 50; renderExplorer(); });
-  $("#prepareReviewBtn").addEventListener("click", prepareReviewBundle);
-  $("#closeDrawer").addEventListener("click", closeDrawer);
-  $("#drawerScrim").addEventListener("click", closeDrawer);
-  $("#closeFinalConfirm").addEventListener("click", closeFinalConfirm);
-  $("#cancelFinalConfirm").addEventListener("click", closeFinalConfirm);
-  $("#finalConfirmScrim").addEventListener("click", closeFinalConfirm);
-  document.addEventListener("keydown", event => {
-    if (event.key !== "Escape") return;
-    if ($("#finalConfirmDialog").classList.contains("open")) closeFinalConfirm();
-    else if ($("#drawer").classList.contains("open")) closeDrawer();
+  $("#searchForm").addEventListener("submit", searchContent);
+  $("#selectVisible").addEventListener("change", event => {
+    pageRecords(filteredRecords()).forEach(record => event.target.checked ? state.checked.add(record.id) : state.checked.delete(record.id));
+    renderList();
   });
-  $("#exportPlanBtn").addEventListener("click", exportPlan);
-  $("#prepareBtn").addEventListener("click", prepareConfirmationSheet);
-  $("#settingsForm").addEventListener("submit", async event => {
+  $("#selectFiltered").addEventListener("click", () => {filteredRecords().forEach(record => state.checked.add(record.id)); renderList();});
+  $("#clearSelection").addEventListener("click", () => {state.checked.clear(); renderList();});
+  $("#batchBar").addEventListener("click", event => {const button = event.target.closest("[data-batch]"); if (button) runBatch(button.dataset.batch);});
+  $("#batchStatus").addEventListener("click", () => $("#batchDialog").showModal());
+  $("#closeBatch").addEventListener("click", () => $("#batchDialog").close());
+  $("#cancelBackup").addEventListener("click", cancelBackup);
+  $("#cancelBackupInline").addEventListener("click", cancelBackup);
+  $("#batchDialog").addEventListener("cancel", event => {
+    if (state.batch?.running && state.batch.action === "backup") { event.preventDefault(); cancelBackup(); }
+  });
+  $("#changeBackupLocation").addEventListener("click", () => openBackupLocation());
+  $("#settingsBtn").addEventListener("click", () => openBackupLocation());
+  $("#themeSettings").addEventListener("change", event => {
+    if (!event.target.matches('input[name="theme"]')) return;
+    const theme = applyTheme(event.target.value);
+    try { localStorage.setItem(themeKey, theme); } catch {}
+  });
+  $("#cancelBackupLocation").addEventListener("click", () => $("#backupLocationDialog").close());
+  $("#backupLocationDialog").addEventListener("close", () => { pendingBackup = null; });
+  $("#chooseBackupDirectory").addEventListener("click", async () => {
+    const button = $("#chooseBackupDirectory"); button.disabled = true;
+    try {
+      const result = await api("/api/backup-choose-directory", {});
+      if (!result.cancelled) $("#backupDirectory").value = result.directory;
+    } catch (error) { $("#backupLocationError").textContent = errorText(error); }
+    finally { button.disabled = false; }
+  });
+  $("#backupLocationForm").addEventListener("submit", async event => {
     event.preventDefault();
-    const payload = Object.fromEntries(new FormData(event.currentTarget));
+    const button = $("#saveBackupLocation"); button.disabled = true;
     try {
-      const data = await api("/api/settings", {method: "POST", body: JSON.stringify(payload)});
-      state.settings = data.settings; state.catalog = data.catalog; applyExecutionState(data.execution_state);
-      $("#coldStorageDir").value = data.settings.cold_storage_dir || "";
-      if (state.capabilities.native_directory_picker) {
-        $("#coldStorageDir").readOnly = true;
-        $("#editColdStorageBtn").textContent = t("手动输入（高级）");
-      }
-      renderAll(); await loadAutoPreview(); toast(t("设置已保存"));
-    } catch (error) { toast(labelFor(error.message)); }
+      const result = await api("/api/backup-location", {directory: $("#backupDirectory").value});
+      state.backup_location = result.backup_location;
+      renderBackupLocation();
+      const ids = pendingBackup;
+      pendingBackup = null;
+      $("#backupLocationDialog").close();
+      if (ids) await runBatch("backup", ids);
+    } catch (error) { $("#backupLocationError").textContent = errorText(error); }
+    finally { button.disabled = false; }
   });
-
-  initialize().catch(error => {
-    const main = $("#mainContent"); main.replaceChildren(el("section", "empty-state", t("看板初始化失败：{error}", {error: error.message})));
+  $("#searchInput").addEventListener("input", () => {
+    state.searchRequest++; state.query = $("#searchInput").value.trim(); state.hits.clear(); state.page = 1; $("#libraryScroll").scrollTop = 0;
+    $("#searchStatus").textContent = t("按 Enter 搜索聊天正文"); renderList(); renderMessages();
   });
+  $("#filters").addEventListener("click", event => {
+    const button = event.target.closest("[data-filter]");
+    if (button) { state.filter = button.dataset.filter; state.page = 1; $("#libraryScroll").scrollTop = 0; renderList(); }
+  });
+  $("#sortSelect").addEventListener("change", () => {state.page = 1; $("#libraryScroll").scrollTop = 0; renderList();});
+  $("#suggestionState").addEventListener("change", event => {state.suggestionState = event.target.value; state.page = 1; $("#libraryScroll").scrollTop = 0; renderList();});
+  ["#projectSelect", "#ageSelect"].forEach(selector => $(selector).addEventListener("change", () => {state.page = 1; $("#libraryScroll").scrollTop = 0; renderList();}));
+  $("#backupsBtn").addEventListener("click", async () => {
+    $("#backupsDialog").showModal();
+    $("#backupsList").replaceChildren(node("p", "empty-copy", t("正在读取备份…")));
+    try {
+      const result = await api("/api/backups");
+      state.backups = result.backups; state.backup_location = result.backup_location;
+      renderBackupLocation(); renderBackups();
+    }
+    catch (error) { $("#backupsList").replaceChildren(node("p", "empty-copy", errorText(error))); }
+  });
+  $("#trashBtn").addEventListener("click", async () => {
+    state.trash = []; state.trashChecked.clear(); $("#trashMeter").hidden = true; renderTrash(); $("#trashDialog").showModal();
+    $("#trashStatus").textContent = t("正在读取回收站…");
+    try { state.trash = (await api("/api/trash")).trash; $("#trashStatus").textContent = ""; renderTrash(); }
+    catch (error) { $("#trashStatus").textContent = errorText(error); }
+  });
+  $("#trashSelectAll").addEventListener("change", event => {
+    state.trashChecked = new Set(event.target.checked ? state.trash.map(item => item.filename) : []); renderTrash();
+  });
+  $("#purgeTrashSelected").addEventListener("click", () => purgeTrash([...state.trashChecked]));
+  $("#closeTrash").addEventListener("click", () => $("#trashDialog").close());
+  $("#undoDelete").addEventListener("click", () => restoreTrash(state.undoFilename));
+  $("#closeBackups").addEventListener("click", () => $("#backupsDialog").close());
+  function changePage(page) { state.page = page; $("#libraryScroll").scrollTop = 0; renderList(); }
+  $("#prevPage").addEventListener("click", () => changePage(state.page - 1));
+  $("#nextPage").addEventListener("click", () => changePage(state.page + 1));
+  $("#pageSelect").addEventListener("change", event => changePage(Number(event.target.value)));
+  $("#loadMoreMessages").addEventListener("click", () => selectSession(state.selected, true));
+  $("#archiveBtn").addEventListener("click", () => runAction(selectedRecord()?.actual_state === "archived" ? "unarchive" : "archive"));
+  $("#backupBtn").addEventListener("click", () => runAction("backup"));
+  $("#deleteBtn").addEventListener("click", () => runAction("delete"));
+  $("#dismissNotice").addEventListener("click", () => { $("#notice").hidden = true; });
+  $("#backBtn").addEventListener("click", () => { $(".workspace").classList.remove("reading"); $("#searchInput").focus(); });
+  $("#languageBtn").addEventListener("click", () => { i18n.setLocale(i18n.locale() === "en" ? "zh-CN" : "en"); translate(); });
+  $("#refreshBtn").addEventListener("click", async () => {
+    const button = $("#refreshBtn"); button.disabled = true;
+    try {
+      const result = await api("/api/library-refresh", {}); state.catalog = result.catalog; state.capabilities = result.capabilities; renderProjects();
+      state.hits.clear(); state.searchRequest++; $("#searchStatus").textContent = t("按 Enter 搜索聊天正文");
+      if (!selectedRecord()) {state.selected = null; state.detail = null; $(".workspace").classList.remove("reading");}
+      renderList(); renderReader();
+      if (state.selected) await selectSession(state.selected);
+    } catch (error) { notice(errorText(error), null, true); }
+    finally { button.disabled = false; }
+  });
+  document.addEventListener("keydown", event => {
+    if ((event.metaKey || event.ctrlKey) && event.key === "k") { event.preventDefault(); $("#searchInput").focus(); }
+    if (event.key === "Escape" && !$("#backupsDialog").open && !$("#batchDialog").open && !$("#trashDialog").open && !$("#backupLocationDialog").open) $("#backBtn").click();
+  });
+  translate();
+  api("/api/library").then(result => {
+    Object.assign(state, result); state.busy = !!state.batch?.running; translate();
+    if (state.batch?.running) followBatch();
+  })
+    .catch(error => { $("#sessionList").replaceChildren(node("p", "empty-copy", errorText(error))); notice(errorText(error), null, true); });
 })();
