@@ -162,7 +162,8 @@ class HistoryCompatibilityTests(unittest.TestCase):
             metadata = json.loads(bundle.read('backup.json'))
         self.assertEqual(hashlib.sha256(original).hexdigest(), metadata['sha256'])
 
-    def test_restore_is_non_overwriting_and_rejects_modified_backup(self):
+    @mock.patch('lib.session_tools.shutil.which', return_value='/fake/codex')
+    def test_restore_is_non_overwriting_and_rejects_modified_backup(self, _which):
         backup = self.tools.action(ACTIVE_ID,'backup')['backup']
         with mock.patch('lib.session_tools.native_request') as native:
             with self.assertRaisesRegex(PermissionError,'restore_session_exists'):
